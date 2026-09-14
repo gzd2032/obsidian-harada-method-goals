@@ -444,11 +444,55 @@ export function removeActionTaskLine(content: string, lineIndex: number): string
 
 export function appendActionTask(content: string, text = "", checked = false): string {
 	const line = `- [${checked ? "x" : " "}] ${text.replace(/\s+/g, " ").trim()}`.trimEnd();
-	const trimmed = content.replace(/\s+$/g, "");
-	if (!trimmed) {
-		return `${line}\n`;
+	const lines = content.split("\n");
+	let lastTaskIdx = -1;
+	for (let i = 0; i < lines.length; i++) {
+		if (TASK_LINE_RE.test(lines[i])) {
+			lastTaskIdx = i;
+		}
 	}
-	return `${trimmed}\n${line}\n`;
+	if (lastTaskIdx === -1) {
+		const trimmed = content.trim();
+		if (!trimmed) {
+			return `${line}\n`;
+		}
+		return `${line}\n\n${trimmed}\n`;
+	}
+	lines.splice(lastTaskIdx + 1, 0, line);
+	return lines.join("\n");
+}
+
+export function parseActionNotes(content: string): string {
+	const lines = content.split("\n");
+	let lastTaskIdx = -1;
+	for (let i = 0; i < lines.length; i++) {
+		if (TASK_LINE_RE.test(lines[i])) {
+			lastTaskIdx = i;
+		}
+	}
+	if (lastTaskIdx === -1) {
+		return content.trim();
+	}
+	return lines.slice(lastTaskIdx + 1).join("\n").trim();
+}
+
+export function updateActionNotes(content: string, notes: string): string {
+	const lines = content.split("\n");
+	let lastTaskIdx = -1;
+	for (let i = 0; i < lines.length; i++) {
+		if (TASK_LINE_RE.test(lines[i])) {
+			lastTaskIdx = i;
+		}
+	}
+	const cleanNotes = notes.trim();
+	if (lastTaskIdx === -1) {
+		return cleanNotes ? `${cleanNotes}\n` : "";
+	}
+	const taskBlock = lines.slice(0, lastTaskIdx + 1).join("\n");
+	if (!cleanNotes) {
+		return `${taskBlock}\n`;
+	}
+	return `${taskBlock}\n\n${cleanNotes}\n`;
 }
 
 export async function deleteActionNote(app: App, path: string): Promise<void> {
@@ -484,6 +528,28 @@ export async function renameKeyPlanFolder(
 	const parent = folder.parent?.path ?? "";
 	const dest = uniquePath(app, parent, basename, true);
 	await app.fileManager.renameFile(folder, dest);
+	return dest;
+}
+
+export async function renameActionNote(
+	app: App,
+	filePath: string,
+	newName: string,
+): Promise<string> {
+	const file = app.vault.getAbstractFileByPath(filePath);
+	if (!(file instanceof TFile)) {
+		throw new Error("Could not find that action note.");
+	}
+	const basename = sanitizeFilename(newName);
+	if (!basename) {
+		throw new Error("Enter an action name.");
+	}
+	if (file.basename === basename) {
+		return file.path;
+	}
+	const parent = file.parent?.path ?? "";
+	const dest = uniquePath(app, parent, basename, false);
+	await app.fileManager.renameFile(file, dest);
 	return dest;
 }
 

@@ -172,36 +172,129 @@ table.harada td.harada-complete::after {
     overflow: auto;
 }
 
-.harada-detail-modal .harada-modal-title {
-    cursor: pointer;
-    color: var(--link-color);
-}
-
-.harada-modal-heading {
+.harada-detail-modal {
     display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 0.5em;
+    flex-direction: column;
+    gap: 0;
 }
 
-.harada-modal-heading h2 {
-    margin: 0;
-    flex: 1;
+.harada-detail-header {
+    margin-bottom: 1em;
 }
 
-.harada-detail-modal .harada-modal-title:hover {
+.harada-detail-context {
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller);
+    line-height: 1.3;
+    margin-bottom: 4px;
+}
+
+.harada-detail-context-link {
+    cursor: pointer;
+    color: var(--text-muted);
+}
+
+.harada-detail-context-link:hover {
+    color: var(--link-color);
     text-decoration: underline;
 }
 
-.harada-task-list {
-    margin: 0.75em 0 1.25em;
+.harada-detail-title-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
 }
 
-.harada-task-row {
+.harada-detail-title {
+    margin: 0;
+    min-width: 0;
+    font-size: var(--h2-size, 1.5em);
+    font-weight: var(--h2-weight, var(--font-semibold));
+    line-height: var(--h2-line-height, 1.3);
+    color: var(--text-normal);
+    cursor: pointer;
+}
+
+.harada-detail-title:hover {
+    color: var(--link-color);
+    text-decoration: underline;
+}
+
+.harada-detail-title-static {
+    cursor: default;
+}
+
+.harada-detail-title-static:hover {
+    color: var(--text-normal);
+    text-decoration: none;
+}
+
+.harada-detail-title-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    flex: none;
+}
+
+.harada-icon-btn {
+    flex: none;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+.harada-title-input {
+    flex: 1;
+    min-width: 0;
+    font-size: var(--h2-size, 1.5em);
+    font-weight: var(--font-semibold);
+    padding: 2px 6px;
+    border-radius: var(--radius-s);
+    background-color: var(--background-modifier-form-field);
+    border: 1px solid var(--interactive-accent);
+}
+
+.harada-detail-body {
+    margin-bottom: 0.5em;
+}
+
+.harada-section-label {
+    font-size: var(--font-ui-smaller);
+    font-weight: var(--font-semibold);
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin: 0 0 0.45em;
+}
+
+.harada-task-list {
+    margin: 0 0 1.1em;
+}
+
+.harada-list-row {
     display: flex;
     align-items: center;
     gap: 8px;
-    margin: 6px 0;
+    margin: 0;
+    padding: 5px 4px;
+    border-radius: var(--radius-s);
+}
+
+.harada-list-row:hover {
+    background: var(--background-modifier-hover);
+}
+
+.harada-list-row-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    flex: none;
+    opacity: 0.55;
+}
+
+.harada-list-row:hover .harada-list-row-actions,
+.harada-list-row:focus-within .harada-list-row-actions {
+    opacity: 1;
 }
 
 .harada-task-row input[type="checkbox"] {
@@ -227,19 +320,45 @@ table.harada td.harada-complete::after {
     font-style: italic;
 }
 
-.harada-task-btn {
-    flex: none;
-}
-
-.harada-empty-tasks {
+.harada-empty-hint {
     color: var(--text-muted);
+    margin: 0 0 1em;
 }
 
-.harada-plan-action {
-    display: block;
-    width: 100%;
-    text-align: left;
-    margin: 4px 0;
-    padding: 6px 8px;
+.harada-plan-row-label {
+    flex: 1;
+    min-width: 0;
     cursor: pointer;
+    color: var(--text-normal);
+}
+
+.harada-plan-row-label:hover {
+    color: var(--link-color);
+}
+
+.harada-notes-section {
+    margin-top: 0.25em;
+    margin-bottom: 0.75em;
+}
+
+.harada-notes-textarea {
+    width: 100%;
+    min-height: 80px;
+    resize: vertical;
+    padding: 8px;
+    font-family: var(--font-text);
+    font-size: var(--font-ui-small);
+    line-height: var(--line-height-normal);
+    border-radius: var(--radius-s);
+    background-color: var(--background-modifier-form-field);
+    border: 1px solid var(--background-modifier-border);
+}
+
+.harada-notes-textarea:focus {
+    border-color: var(--interactive-accent);
+}
+
+.harada-detail-footer .setting-item {
+    border-top: 1px solid var(--background-modifier-border);
+    padding-top: 0.9em;
 }

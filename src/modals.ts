@@ -1,8 +1,10 @@
 import { App, Modal, Setting, TFile, setIcon } from "obsidian";
 import {
 	appendActionTask,
+	parseActionNotes,
 	parseActionTasks,
 	removeActionTaskLine,
+	updateActionNotes,
 	updateActionTaskLine,
 } from "./goal-folder";
 
@@ -240,15 +242,22 @@ class ConfirmModal extends Modal {
 export interface ActionDetailOptions {
 	title: string;
 	path: string;
+	keyPlanName?: string;
 	onOpenNote: () => void | Promise<void>;
+	onOpenKeyPlan?: () => void;
+	onRename: (newName: string) => Promise<{ title: string; path: string } | null>;
 	onDelete: () => Promise<void>;
 }
 
 class ActionDetailModal extends Modal {
+	private headerEl: HTMLElement | null = null;
 	private listEl: HTMLElement | null = null;
+	private notesTextarea: HTMLTextAreaElement | null = null;
 	private editingIndex: number | null = null;
+	private isEditingTitle = false;
 	private busy = false;
 	private skipBlurCommit = false;
+	private isDeleted = false;
 
 	constructor(
 		app: App,
@@ -262,32 +271,210 @@ class ActionDetailModal extends Modal {
 		contentEl.empty();
 		contentEl.addClass("harada-detail-modal");
 
-		const title = contentEl.createEl("h2", {
-			text: this.options.title,
-			cls: "harada-modal-title",
-			attr: { title: "Open note" },
+		this.headerEl = contentEl.createDiv({ cls: "harada-detail-header" });
+		this.renderHeader();
+
+		const body = contentEl.createDiv({ cls: "harada-detail-body" });
+		body.createDiv({ text: "Tasks", cls: "harada-section-label" });
+		this.listEl = body.createDiv({ cls: "harada-task-list" });
+
+		const notesSection = body.createDiv({ cls: "harada-notes-section" });
+		notesSection.createDiv({ text: "Notes", cls: "harada-section-label" });
+		this.notesTextarea = notesSection.createEl("textarea", {
+			cls: "harada-notes-textarea",
+			attr: { placeholder: "Add notes...", rows: "4" },
 		});
-		title.addEventListener("click", () => {
-			this.close();
-			void this.options.onOpenNote();
+		this.notesTextarea.addEventListener("blur", () => {
+			void this.commitNotes();
 		});
 
-		this.listEl = contentEl.createDiv({ cls: "harada-task-list" });
+		const footer = contentEl.createDiv({ cls: "harada-detail-footer" });
+		new Setting(footer)
+			.addButton((btn) =>
+				btn.setButtonText("Open note").onClick(() => {
+					this.close();
+					void this.options.onOpenNote();
+				}),
+			)
+			.addButton((btn) =>
+				btn
+					.setButtonText("Delete action")
+					.setWarning()
+					.onClick(() => {
+						void this.deleteAction();
+					}),
+			);
+
 		this.editingIndex = -1;
 		void this.renderTasks();
+		void this.loadNotes();
+	}
 
-		new Setting(contentEl).addButton((btn) =>
-			btn
-				.setButtonText("Delete action")
-				.setWarning()
-				.onClick(() => {
-					void this.deleteAction();
-				}),
-		);
+	private renderHeader() {
+		if (!this.headerEl) {
+			return;
+		}
+		this.headerEl.empty();
+
+		if (this.options.keyPlanName) {
+			const context = this.headerEl.createDiv({ cls: "harada-detail-context" });
+			const plan = context.createSpan({
+				text: this.options.keyPlanName,
+				cls: "harada-detail-context-link",
+			});
+			plan.setAttr("role", "button");
+			plan.setAttr("tabindex", "0");
+			plan.setAttr("title", "Open Key Plan");
+			const openPlan = () => {
+				if (!this.options.onOpenKeyPlan) {
+					return;
+				}
+				this.close();
+				this.options.onOpenKeyPlan();
+			};
+			plan.addEventListener("click", openPlan);
+			plan.addEventListener("keydown", (event) => {
+				if (event.key === "Enter" || event.key === " ") {
+					event.preventDefault();
+					openPlan();
+				}
+			});
+		}
+
+		const titleRow = this.headerEl.createDiv({ cls: "harada-detail-title-row" });
+
+		if (this.isEditingTitle) {
+			const input = titleRow.createEl("input", {
+				type: "text",
+				cls: "harada-title-input",
+			});
+			input.value = this.options.title;
+
+			const save = async () => {
+				const val = input.value.trim();
+				if (val && val !== this.options.title) {
+					const res = await this.options.onRename(val);
+					if (res) {
+						this.options.title = res.title;
+						this.options.path = res.path;
+					}
+				}
+				this.isEditingTitle = false;
+				this.renderHeader();
+			};
+
+			const cancel = () => {
+				this.isEditingTitle = false;
+				this.renderHeader();
+			};
+
+			input.addEventListener("keydown", (e) => {
+				if (e.key === "Enter") {
+					e.preventDefault();
+					void save();
+				} else if (e.key === "Escape") {
+					e.preventDefault();
+					cancel();
+				}
+			});
+
+			const actions = titleRow.createDiv({ cls: "harada-detail-title-actions" });
+			const saveBtn = actions.createEl("button", {
+				cls: "clickable-icon harada-icon-btn",
+				attr: { type: "button", "aria-label": "Save action name" },
+			});
+			setIcon(saveBtn, "check");
+			saveBtn.addEventListener("click", () => {
+				void save();
+			});
+
+			const cancelBtn = actions.createEl("button", {
+				cls: "clickable-icon harada-icon-btn",
+				attr: { type: "button", "aria-label": "Cancel" },
+			});
+			setIcon(cancelBtn, "cross");
+			cancelBtn.addEventListener("click", () => {
+				cancel();
+			});
+
+			window.setTimeout(() => {
+				input.focus();
+				input.select();
+			}, 0);
+			return;
+		}
+
+		const title = titleRow.createSpan({
+			text: this.options.title,
+			cls: "harada-detail-title",
+		});
+		title.setAttr("role", "button");
+		title.setAttr("tabindex", "0");
+		title.setAttr("title", "Open note");
+		const openNote = () => {
+			this.close();
+			void this.options.onOpenNote();
+		};
+		title.addEventListener("click", openNote);
+		title.addEventListener("keydown", (event) => {
+			if (event.key === "Enter" || event.key === " ") {
+				event.preventDefault();
+				openNote();
+			}
+		});
+
+		const actions = titleRow.createDiv({ cls: "harada-detail-title-actions" });
+		const editBtn = actions.createEl("button", {
+			cls: "clickable-icon harada-icon-btn",
+			attr: { type: "button", "aria-label": "Rename action" },
+		});
+		setIcon(editBtn, "pencil");
+		editBtn.addEventListener("click", () => {
+			this.isEditingTitle = true;
+			this.renderHeader();
+		});
 	}
 
 	onClose() {
+		if (!this.isDeleted) {
+			void this.commitNotes();
+		}
 		this.contentEl.empty();
+	}
+
+	private async loadNotes() {
+		if (!this.notesTextarea) {
+			return;
+		}
+		const current = await this.readActionFile();
+		if (!current) {
+			return;
+		}
+		this.notesTextarea.value = parseActionNotes(current.content);
+	}
+
+	private async commitNotes() {
+		if (this.busy || !this.notesTextarea || this.isDeleted) {
+			return;
+		}
+		const text = this.notesTextarea.value;
+		const current = await this.readActionFile();
+		if (!current) {
+			return;
+		}
+		const existing = parseActionNotes(current.content);
+		if (existing === text.trim()) {
+			return;
+		}
+		this.busy = true;
+		try {
+			await this.app.vault.modify(
+				current.file,
+				updateActionNotes(current.content, text),
+			);
+		} finally {
+			this.busy = false;
+		}
 	}
 
 	private async renderTasks() {
@@ -297,7 +484,7 @@ class ActionDetailModal extends Modal {
 		this.listEl.empty();
 		const file = this.app.vault.getAbstractFileByPath(this.options.path);
 		if (!(file instanceof TFile)) {
-			this.listEl.createEl("p", { text: "This action note is missing." });
+			this.listEl.createEl("p", { text: "This action note is missing.", cls: "harada-empty-hint" });
 			return;
 		}
 		const content = await this.app.vault.read(file);
@@ -330,7 +517,7 @@ class ActionDetailModal extends Modal {
 			return;
 		}
 		const editing = this.editingIndex === task.index;
-		const row = this.listEl.createDiv({ cls: "harada-task-row" });
+		const row = this.listEl.createDiv({ cls: "harada-list-row harada-task-row" });
 		const box = row.createEl("input", { type: "checkbox" });
 		box.checked = task.checked;
 		box.addEventListener("change", () => {
@@ -384,8 +571,9 @@ class ActionDetailModal extends Modal {
 			});
 		}
 
-		const editBtn = row.createEl("button", {
-			cls: "clickable-icon harada-task-btn",
+		const trailing = row.createDiv({ cls: "harada-list-row-actions" });
+		const editBtn = trailing.createEl("button", {
+			cls: "clickable-icon harada-icon-btn",
 			attr: { type: "button", "aria-label": "Edit" },
 		});
 		setIcon(editBtn, "pencil");
@@ -401,8 +589,8 @@ class ActionDetailModal extends Modal {
 			void this.renderTasks();
 		});
 
-		const deleteBtn = row.createEl("button", {
-			cls: "clickable-icon harada-task-btn",
+		const deleteBtn = trailing.createEl("button", {
+			cls: "clickable-icon harada-icon-btn",
 			attr: { type: "button", "aria-label": "Delete" },
 		});
 		setIcon(deleteBtn, "trash");
@@ -544,6 +732,7 @@ class ActionDetailModal extends Modal {
 		if (!ok) {
 			return;
 		}
+		this.isDeleted = true;
 		this.close();
 		await this.options.onDelete();
 	}
@@ -558,7 +747,7 @@ export interface PlanDetailOptions {
 }
 
 class PlanDetailModal extends Modal {
-	private headingEl: HTMLElement | null = null;
+	private subjectEl: HTMLElement | null = null;
 
 	constructor(
 		app: App,
@@ -572,10 +761,16 @@ class PlanDetailModal extends Modal {
 		contentEl.empty();
 		contentEl.addClass("harada-detail-modal");
 
-		const heading = contentEl.createDiv({ cls: "harada-modal-heading" });
-		this.headingEl = heading.createEl("h2", { text: this.options.title });
-		const editBtn = heading.createEl("button", {
-			cls: "clickable-icon harada-task-btn",
+		const header = contentEl.createDiv({ cls: "harada-detail-header" });
+		header.createDiv({ text: "Key Plan", cls: "harada-detail-context" });
+		const titleRow = header.createDiv({ cls: "harada-detail-title-row" });
+		this.subjectEl = titleRow.createSpan({
+			text: this.options.title,
+			cls: "harada-detail-title harada-detail-title-static",
+		});
+		const actions = titleRow.createDiv({ cls: "harada-detail-title-actions" });
+		const editBtn = actions.createEl("button", {
+			cls: "clickable-icon harada-icon-btn",
 			attr: { type: "button", "aria-label": "Rename Key Plan" },
 		});
 		setIcon(editBtn, "pencil");
@@ -583,23 +778,33 @@ class PlanDetailModal extends Modal {
 			void this.renamePlan();
 		});
 
+		const body = contentEl.createDiv({ cls: "harada-detail-body" });
+		body.createDiv({ text: "Actions", cls: "harada-section-label" });
 		if (this.options.actions.length === 0) {
-			contentEl.createEl("p", { text: "No actions in this Key Plan yet." });
+			body.createEl("p", { text: "No actions in this Key Plan yet.", cls: "harada-empty-hint" });
 		} else {
-			const list = contentEl.createDiv({ cls: "harada-task-list" });
+			const list = body.createDiv({ cls: "harada-task-list" });
 			for (const action of this.options.actions) {
-				const row = list.createEl("button", {
-					text: action.name,
-					cls: "harada-plan-action",
-				});
-				row.addEventListener("click", () => {
+				const row = list.createDiv({ cls: "harada-list-row harada-plan-row" });
+				const label = row.createSpan({ text: action.name, cls: "harada-plan-row-label" });
+				label.setAttr("role", "button");
+				label.setAttr("tabindex", "0");
+				const open = () => {
 					this.close();
 					this.options.onOpenAction(action);
+				};
+				label.addEventListener("click", open);
+				label.addEventListener("keydown", (event) => {
+					if (event.key === "Enter" || event.key === " ") {
+						event.preventDefault();
+						open();
+					}
 				});
 			}
 		}
 
-		new Setting(contentEl).addButton((btn) =>
+		const footer = contentEl.createDiv({ cls: "harada-detail-footer" });
+		new Setting(footer).addButton((btn) =>
 			btn
 				.setButtonText("Delete Key Plan")
 				.setWarning()
@@ -615,11 +820,11 @@ class PlanDetailModal extends Modal {
 
 	private async renamePlan() {
 		const next = await this.options.onRename();
-		if (!next || !this.headingEl) {
+		if (!next || !this.subjectEl) {
 			return;
 		}
 		this.options.title = next;
-		this.headingEl.setText(next);
+		this.subjectEl.setText(next);
 	}
 
 	private async deletePlan() {
