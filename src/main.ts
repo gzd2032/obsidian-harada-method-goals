@@ -376,10 +376,9 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 			if (!actionName) {
 				return;
 			}
-			const actionPath = await createActionNote(this.app, folderPath, actionName);
+			await createActionNote(this.app, folderPath, actionName);
 			await syncGoalsOutline(this.app, scan.masterPath, this.settings);
 			new Notice(`Created action “${actionName}”`);
-			await this.openBeside(actionPath, sourcePath);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			new Notice(`Could not update Harada cell: ${message}`);
