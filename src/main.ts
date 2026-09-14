@@ -393,10 +393,27 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 		}
 		let path = target.path;
 		let title = target.label;
+		const keyplan =
+			target.keyplanIndex !== undefined
+				? scan.keyplans[target.keyplanIndex]
+				: scan.keyplans.find((item) => item.folderPath === target.folderPath);
+		const keyPlanName = keyplan?.name ?? target.folderPath?.split("/").pop() ?? undefined;
 		openActionDetail(this.app, {
 			title,
 			path,
+			keyPlanName,
 			onOpenNote: () => this.openInTab(path, sourcePath),
+			onOpenKeyPlan: keyplan?.folderPath
+				? () => {
+						this.showPlanDetail(scan, sourcePath, {
+							kind: "keyplan",
+							label: keyplan.name ?? keyPlanName ?? "Key Plan",
+							exists: true,
+							keyplanIndex: keyplan.index,
+							folderPath: keyplan.folderPath ?? undefined,
+						});
+				  }
+				: undefined,
 			onRename: async (newName: string) => {
 				path = await renameActionNote(this.app, path, newName);
 				const file = this.app.vault.getAbstractFileByPath(path);
@@ -433,6 +450,8 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 					label: action.name,
 					exists: true,
 					path: action.path,
+					folderPath,
+					keyplanIndex: target.keyplanIndex,
 				});
 			},
 			onRename: async () => {
