@@ -1,0 +1,683 @@
+import { App, TFile, TFolder, normalizePath } from "obsidian";
+
+export const SLOT_COUNT = 8;
+export const EMPTY_LABEL = "-";
+export const ADD_PLAN_LABEL = "Add plan";
+const IGNORED_ACTION_FILENAME = "_plan.md";
+
+export interface GoalFolderSettings {
+	masterNoteFilename: string;
+	parentFolder: string;
+}
+
+export interface TaskProgress {
+	done: number;
+	total: number;
+}
+
+export interface ActionSlot {
+	name: string | null;
+	path: string | null;
+	progress?: TaskProgress;
+}
+
+export interface KeyPlanSlot {
+	index: number;
+	name: string | null;
+	folderPath: string | null;
+	planPath: string | null;
+	actions: ActionSlot[];
+}
+
+export interface GoalFolderScan {
+	folderPath: string;
+	masterPath: string;
+	goalTitle: string;
+	keyplans: KeyPlanSlot[];
+}
+
+export function isMasterNote(sourcePath: string, masterNoteFilename: string): boolean {
+	if (!sourcePath) {
+		return false;
+	}
+	const parts = sourcePath.split("/");
+	if (parts.includes(".obsidian")) {
+		return false;
+	}
+	const fileName = parts[parts.length - 1] ?? "";
+	if (!fileName.toLowerCase().endsWith(".md")) {
+		return false;
+	}
+	const have = fileName.slice(0, -3).toLowerCase();
+	const want = masterNoteFilename.replace(/\.md$/i, "").toLowerCase();
+	return have === want;
+}
+
+export function isMisnamedMasterNote(sourcePath: string, masterNoteFilename: string): boolean {
+	if (!sourcePath) {
+		return false;
+	}
+	const fileName = sourcePath.split("/").pop() ?? "";
+	const want = masterNoteFilename.replace(/\.md$/i, "").toLowerCase();
+	return fileName.toLowerCase() === `${want}.md.md`;
+}
+
+export function goalFolderPathFromMaster(masterPath: string): string {
+	const idx = masterPath.lastIndexOf("/");
+	return idx === -1 ? "" : masterPath.slice(0, idx);
+}
+
+export function sanitizeFilename(name: string): string {
+	const cleaned = name
+		.replace(/[\\/:*?"<>|#^[\]]+/g, "-")
+		.replace(/\s+/g, " ")
+		.trim()
+		.replace(/^\.+/, "")
+		.replace(/\.+$/, "");
+	return cleaned || "Untitled";
+}
+
+export function parseGoalTitle(content: string, fallback: string): string {
+	const match = content.match(/^#\s+(.+?)\s*$/m);
+	const title = match?.[1]?.trim();
+	return title || fallback;
+}
+
+export function masterFilename(settings: GoalFolderSettings): string {
+	const raw = settings.masterNoteFilename.trim() || "goals.md";
+	return raw.toLowerCase().endsWith(".md") ? raw : `${raw}.md`;
+}
+
+function emptyActions(): ActionSlot[] {
+	return Array.from({ length: SLOT_COUNT }, () => ({ name: null, path: null }));
+}
+
+function emptyKeyplans(): KeyPlanSlot[] {
+	return Array.from({ length: SLOT_COUNT }, (_, index) => ({
+		index,
+		name: null,
+		folderPath: null,
+		planPath: null,
+		actions: emptyActions(),
+	}));
+}
+
+function sortByName<T extends { name: string }>(items: T[]): T[] {
+	return items.sort((a, b) =>
+		a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }),
+	);
+}
+
+export function extractGoalsFenceBody(content: string): string {
+	const match = content.match(/```(?:goals|harada)[^\n]*\n([\s\S]*?)```/);
+	return match?.[1]?.replace(/\n$/, "") ?? "";
+}
+
+export function parseOutlineOrder(text: string): { keyplans: string[]; actions: Map<string, string[]> } {
+	const keyplans: string[] = [];
+	const actions = new Map<string, string[]>();
+	let current: string | null = null;
+	for (const raw of text.split("\n")) {
+		const leading = raw.match(/^(\s*)/)?.[1].length ?? 0;
+		const name = raw.trim();
+		if (!name) {
+			continue;
+		}
+		const level = leading / 2;
+		if (!Number.isInteger(level)) {
+			continue;
+		}
+		if (level === 1) {
+			current = name;
+			keyplans.push(name);
+			if (!actions.has(name)) {
+				actions.set(name, []);
+			}
+		} else if (level >= 2 && current) {
+			const list = actions.get(current) ?? [];
+			list.push(name);
+			actions.set(current, list);
+		}
+	}
+	return { keyplans, actions };
+}
+
+export async function scanGoalFolderFromFile(
+	app: App,
+	masterPath: string,
+	settings: GoalFolderSettings,
+): Promise<GoalFolderScan | null> {
+	const file = app.vault.getAbstractFileByPath(masterPath);
+	let outline = "";
+	if (file instanceof TFile) {
+		outline = extractGoalsFenceBody(await app.vault.cachedRead(file));
+	}
+	const scan = scanGoalFolder(app, masterPath, settings, outline);
+	if (scan) {
+		await enrichTaskProgress(app, scan);
+	}
+	return scan;
+}
+
+async function enrichTaskProgress(app: App, scan: GoalFolderScan): Promise<void> {
+	for (const keyplan of scan.keyplans) {
+		for (const action of keyplan.actions) {
+			if (!action.path) {
+				continue;
+			}
+			const file = app.vault.getAbstractFileByPath(action.path);
+			if (!(file instanceof TFile)) {
+				continue;
+			}
+			action.progress = progressFromContent(await app.vault.cachedRead(file));
+		}
+	}
+}
+
+function progressFromContent(content: string): TaskProgress | undefined {
+	const tasks = parseActionTasks(content).filter((task) => task.text.trim() !== "");
+	if (tasks.length === 0) {
+		return undefined;
+	}
+	return {
+		done: tasks.filter((task) => task.checked).length,
+		total: tasks.length,
+	};
+}
+
+export function scanGoalFolder(
+	app: App,
+	masterPath: string,
+	settings: GoalFolderSettings,
+	outlineText = "",
+): GoalFolderScan | null {
+	if (!isMasterNote(masterPath, settings.masterNoteFilename)) {
+		return null;
+	}
+
+	const folderPath = goalFolderPathFromMaster(masterPath);
+	const folder =
+		folderPath === ""
+			? app.vault.getRoot()
+			: app.vault.getAbstractFileByPath(folderPath);
+	if (!(folder instanceof TFolder)) {
+		return null;
+	}
+
+	const fallbackTitle = folderPath === "" ? "Goal" : folder.name;
+	const masterFile = app.vault.getAbstractFileByPath(masterPath);
+	let goalTitle = fallbackTitle;
+	if (masterFile instanceof TFile) {
+		const heading = app.metadataCache
+			.getFileCache(masterFile)
+			?.headings?.find((item) => item.level === 1)?.heading;
+		goalTitle = heading?.trim() || fallbackTitle;
+	}
+
+	const ignoredPlan = IGNORED_ACTION_FILENAME.toLowerCase();
+	const collected: KeyPlanSlot[] = sortByName(
+		folder.children.filter((child): child is TFolder => child instanceof TFolder),
+	).map((sub, index) => {
+		const actionFiles = sortByName(
+			sub.children.filter(
+				(child): child is TFile =>
+					child instanceof TFile &&
+					child.extension === "md" &&
+					child.name.toLowerCase() !== ignoredPlan,
+			),
+		);
+		const actions = emptyActions();
+		actionFiles.slice(0, SLOT_COUNT).forEach((file, actionIndex) => {
+			actions[actionIndex] = {
+				name: file.basename,
+				path: file.path,
+				progress: taskProgress(app, file),
+			};
+		});
+		return {
+			index,
+			name: sub.name,
+			folderPath: sub.path,
+			planPath: null,
+			actions,
+		};
+	});
+
+	const keyplans = applyOutlineOrder(collected, parseOutlineOrder(outlineText));
+
+	return {
+		folderPath,
+		masterPath,
+		goalTitle,
+		keyplans,
+	};
+}
+
+function taskProgress(app: App, file: TFile): TaskProgress | undefined {
+	const tasks = app.metadataCache
+		.getFileCache(file)
+		?.listItems?.filter((item) => item.task !== undefined && taskHasLabel(item));
+	if (!tasks || tasks.length === 0) {
+		return undefined;
+	}
+	const done = tasks.filter((item) => (item.task ?? " ").trim() !== "").length;
+	return { done, total: tasks.length };
+}
+
+function taskHasLabel(item: { position: { start: { col: number }; end: { col: number } } }): boolean {
+	return item.position.end.col - item.position.start.col > 6;
+}
+
+function applyOutlineOrder(
+	collected: KeyPlanSlot[],
+	outline: { keyplans: string[]; actions: Map<string, string[]> },
+): KeyPlanSlot[] {
+	const byName = new Map(collected.map((item) => [item.name!.toLowerCase(), item]));
+	const ordered: KeyPlanSlot[] = [];
+	const used = new Set<string>();
+	for (const name of outline.keyplans) {
+		const hit = byName.get(name.toLowerCase());
+		if (!hit || used.has(hit.folderPath ?? "")) {
+			continue;
+		}
+		used.add(hit.folderPath ?? "");
+		ordered.push(orderActions(hit, outline.actions.get(name) ?? outline.actions.get(hit.name ?? "") ?? []));
+	}
+	for (const item of collected) {
+		if (used.has(item.folderPath ?? "")) {
+			continue;
+		}
+		used.add(item.folderPath ?? "");
+		ordered.push(orderActions(item, outline.actions.get(item.name ?? "") ?? []));
+	}
+	const slots = emptyKeyplans();
+	ordered.slice(0, SLOT_COUNT).forEach((item, index) => {
+		slots[index] = { ...item, index };
+	});
+	return slots;
+}
+
+function orderActions(keyplan: KeyPlanSlot, names: string[]): KeyPlanSlot {
+	const filled = keyplan.actions.filter((action): action is ActionSlot & { name: string; path: string } =>
+		!!action.name && !!action.path,
+	);
+	const byName = new Map(filled.map((action) => [action.name.toLowerCase(), action]));
+	const ordered: ActionSlot[] = [];
+	const used = new Set<string>();
+	for (const name of names) {
+		const hit = byName.get(name.toLowerCase());
+		if (!hit || used.has(hit.path)) {
+			continue;
+		}
+		used.add(hit.path);
+		ordered.push(hit);
+	}
+	for (const action of filled) {
+		if (used.has(action.path)) {
+			continue;
+		}
+		used.add(action.path);
+		ordered.push(action);
+	}
+	const actions = emptyActions();
+	ordered.slice(0, SLOT_COUNT).forEach((action, index) => {
+		actions[index] = action;
+	});
+	return { ...keyplan, actions };
+}
+
+function uniquePath(app: App, parentPath: string, basename: string, asFolder: boolean): string {
+	const fileName = asFolder ? basename : `${basename}.md`;
+	const make = (n: string) =>
+		normalizePath(parentPath === "" ? n : `${parentPath}/${n}`);
+
+	let name = fileName;
+	let path = make(name);
+	let n = 2;
+	while (app.vault.getAbstractFileByPath(path)) {
+		name = asFolder ? `${basename} ${n}` : `${basename} ${n}.md`;
+		path = make(name);
+		n += 1;
+	}
+	return path;
+}
+
+export async function ensureFolder(app: App, path: string): Promise<TFolder> {
+	const normalized = normalizePath(path);
+	const existing = app.vault.getAbstractFileByPath(normalized);
+	if (existing instanceof TFolder) {
+		return existing;
+	}
+	if (existing) {
+		throw new Error(`A file already exists at ${normalized}`);
+	}
+	const slash = normalized.lastIndexOf("/");
+	if (slash > 0) {
+		await ensureFolder(app, normalized.slice(0, slash));
+	}
+	await app.vault.createFolder(normalized);
+	const created = app.vault.getAbstractFileByPath(normalized);
+	if (!(created instanceof TFolder)) {
+		throw new Error(`Could not create folder ${normalized}`);
+	}
+	return created;
+}
+
+export async function createKeyPlan(
+	app: App,
+	goalFolderPath: string,
+	name: string,
+): Promise<{ folderPath: string; name: string }> {
+	const basename = sanitizeFilename(name);
+	const folderPath = uniquePath(app, goalFolderPath, basename, true);
+	await ensureFolder(app, folderPath);
+	const folderName = folderPath.split("/").pop() ?? basename;
+	return { folderPath, name: folderName };
+}
+
+export async function createActionNote(
+	app: App,
+	keyplanFolderPath: string,
+	name: string,
+): Promise<string> {
+	const basename = sanitizeFilename(name);
+	const path = uniquePath(app, keyplanFolderPath, basename, false);
+	await app.vault.create(path, "- [ ] \n");
+	return path;
+}
+
+const TASK_LINE_RE = /^(\s*(?:[-*+]|\d+\.)\s+)\[([ xX])\](\s?)(.*)$/;
+
+export interface ActionTaskLine {
+	index: number;
+	checked: boolean;
+	text: string;
+}
+
+export function parseActionTasks(content: string): ActionTaskLine[] {
+	return content.split("\n").flatMap((line, index) => {
+		const match = line.match(TASK_LINE_RE);
+		if (!match) {
+			return [];
+		}
+		return [{ index, checked: match[2].toLowerCase() === "x", text: match[4] ?? "" }];
+	});
+}
+
+export function toggleActionTaskLine(content: string, lineIndex: number): string {
+	return updateActionTaskLine(content, lineIndex, { checked: "toggle" });
+}
+
+export function updateActionTaskLine(
+	content: string,
+	lineIndex: number,
+	patch: { checked?: boolean | "toggle"; text?: string },
+): string {
+	const lines = content.split("\n");
+	const line = lines[lineIndex];
+	if (line === undefined) {
+		return content;
+	}
+	const match = line.match(TASK_LINE_RE);
+	if (!match) {
+		return content;
+	}
+	let checked = match[2].toLowerCase() === "x";
+	if (patch.checked === "toggle") {
+		checked = !checked;
+	} else if (typeof patch.checked === "boolean") {
+		checked = patch.checked;
+	}
+	const text = patch.text === undefined ? (match[4] ?? "") : patch.text.replace(/\s+/g, " ").trim();
+	lines[lineIndex] = `${match[1]}[${checked ? "x" : " "}] ${text}`.trimEnd();
+	return lines.join("\n");
+}
+
+export function removeActionTaskLine(content: string, lineIndex: number): string {
+	const lines = content.split("\n");
+	if (lineIndex < 0 || lineIndex >= lines.length) {
+		return content;
+	}
+	lines.splice(lineIndex, 1);
+	return lines.join("\n");
+}
+
+export function appendActionTask(content: string, text = "", checked = false): string {
+	const line = `- [${checked ? "x" : " "}] ${text.replace(/\s+/g, " ").trim()}`.trimEnd();
+	const trimmed = content.replace(/\s+$/g, "");
+	if (!trimmed) {
+		return `${line}\n`;
+	}
+	return `${trimmed}\n${line}\n`;
+}
+
+export async function deleteActionNote(app: App, path: string): Promise<void> {
+	const file = app.vault.getAbstractFileByPath(path);
+	if (file instanceof TFile) {
+		await app.vault.trash(file, true);
+	}
+}
+
+export async function deleteKeyPlanFolder(app: App, folderPath: string): Promise<void> {
+	const folder = app.vault.getAbstractFileByPath(folderPath);
+	if (folder instanceof TFolder) {
+		await app.vault.trash(folder, true);
+	}
+}
+
+export async function renameKeyPlanFolder(
+	app: App,
+	folderPath: string,
+	newName: string,
+): Promise<string> {
+	const folder = app.vault.getAbstractFileByPath(folderPath);
+	if (!(folder instanceof TFolder)) {
+		throw new Error("Could not find that Key Plan folder.");
+	}
+	const basename = sanitizeFilename(newName);
+	if (!basename) {
+		throw new Error("Enter a Key Plan name.");
+	}
+	if (folder.name === basename) {
+		return folder.path;
+	}
+	const parent = folder.parent?.path ?? "";
+	const dest = uniquePath(app, parent, basename, true);
+	await app.fileManager.renameFile(folder, dest);
+	return dest;
+}
+
+export async function createGoalFolder(
+	app: App,
+	name: string,
+	parentPath: string,
+	settings: GoalFolderSettings,
+): Promise<string> {
+	const basename = sanitizeFilename(name);
+	const parent = parentPath.trim() ? normalizePath(parentPath.trim()) : "";
+	if (parent) {
+		await ensureFolder(app, parent);
+	}
+	const folderPath = uniquePath(app, parent, basename, true);
+	await ensureFolder(app, folderPath);
+	const masterPath = normalizePath(`${folderPath}/${masterFilename(settings)}`);
+	if (!app.vault.getAbstractFileByPath(masterPath)) {
+		await app.vault.create(
+			masterPath,
+			`# ${basename}\n\nDescribe this goal.\n\n\`\`\`goals\n${basename}\n\`\`\`\n`,
+		);
+	}
+	return masterPath;
+}
+
+export function outlineFromScan(scan: GoalFolderScan): string {
+	const lines = [scan.goalTitle];
+	for (const keyplan of scan.keyplans) {
+		if (!keyplan.name || !keyplan.folderPath) {
+			continue;
+		}
+		lines.push(`  ${keyplan.name}`);
+		for (const action of keyplan.actions) {
+			if (!action.name) {
+				continue;
+			}
+			lines.push(`    ${action.name}`);
+		}
+	}
+	return lines.join("\n");
+}
+
+const GOALS_FENCE_RE = /```(?:goals|harada)[^\n]*\n([\s\S]*?)```/;
+
+export function upsertGoalsFence(content: string, outline: string): string {
+	const body = `${outline}\n`;
+	if (GOALS_FENCE_RE.test(content)) {
+		return content.replace(GOALS_FENCE_RE, `\`\`\`goals\n${body}\`\`\``);
+	}
+	const trimmed = content.replace(/\s*$/, "");
+	return `${trimmed}\n\n\`\`\`goals\n${body}\`\`\`\n`;
+}
+
+export async function syncGoalsOutline(
+	app: App,
+	masterPath: string,
+	settings: GoalFolderSettings,
+): Promise<void> {
+	const scan = await scanGoalFolderFromFile(app, masterPath, settings);
+	if (!scan) {
+		return;
+	}
+	const file = app.vault.getAbstractFileByPath(masterPath);
+	if (!(file instanceof TFile)) {
+		return;
+	}
+	const content = await app.vault.read(file);
+	const next = upsertGoalsFence(content, outlineFromScan(scan));
+	if (next !== content) {
+		await app.vault.modify(file, next);
+	}
+}
+
+export async function applyChartDrop(
+	app: App,
+	scan: GoalFolderScan,
+	from: { kind: "keyplan" | "action"; keyplanIndex: number; actionIndex?: number },
+	to: { kind: "keyplan" | "action"; keyplanIndex: number; actionIndex?: number },
+	_settings: GoalFolderSettings,
+): Promise<string | null> {
+	if (from.kind !== to.kind) {
+		return "Drop a Key Plan on a Key Plan, or an action on an action.";
+	}
+	if (from.kind === "keyplan") {
+		const compact = scan.keyplans.filter((item) => item.folderPath);
+		const fromItem = scan.keyplans[from.keyplanIndex];
+		const toItem = scan.keyplans[to.keyplanIndex];
+		if (!fromItem?.folderPath) {
+			return "That Key Plan cannot be moved.";
+		}
+		const fromCompact = compact.findIndex((item) => item.folderPath === fromItem.folderPath);
+		let toCompact = compact.findIndex((item) => item.folderPath === toItem?.folderPath);
+		if (fromCompact < 0) {
+			return "That Key Plan cannot be moved.";
+		}
+		if (toCompact < 0) {
+			toCompact = compact.length;
+		}
+		const [moved] = compact.splice(fromCompact, 1);
+		compact.splice(Math.min(toCompact, compact.length), 0, moved);
+		scan.keyplans = padKeyplans(compact);
+		await syncOutlineFromScan(app, scan);
+		return null;
+	}
+
+	const fromKp = scan.keyplans[from.keyplanIndex];
+	const toKp = scan.keyplans[to.keyplanIndex];
+	const fromAct = fromKp?.actions[from.actionIndex ?? -1];
+	if (!fromKp?.folderPath || !fromAct?.path || !fromAct.name) {
+		return "That action cannot be moved.";
+	}
+	if (!toKp?.folderPath) {
+		return "Create the destination Key Plan first.";
+	}
+
+	let destPath = fromAct.path;
+	if (fromKp.folderPath !== toKp.folderPath) {
+		const destActions = toKp.actions.filter((action) => action.path).length;
+		if (destActions >= SLOT_COUNT) {
+			return "That Key Plan already has eight actions.";
+		}
+		const file = app.vault.getAbstractFileByPath(fromAct.path);
+		if (!(file instanceof TFile)) {
+			return "Could not find that action note.";
+		}
+		destPath = uniquePath(app, toKp.folderPath, fromAct.name, false);
+		await app.fileManager.renameFile(file, destPath);
+	}
+
+	const sourceCompact = compactActions(fromKp);
+	const destCompact = fromKp.folderPath === toKp.folderPath ? sourceCompact : compactActions(toKp);
+	const fromIdx = sourceCompact.findIndex((action) => action.path === fromAct.path);
+	if (fromIdx < 0) {
+		return "That action cannot be moved.";
+	}
+		const [moved] = sourceCompact.splice(fromIdx, 1);
+		moved.path = destPath;
+		const toAct = toKp.actions[to.actionIndex ?? -1];
+		const destList = fromKp.folderPath === toKp.folderPath ? sourceCompact : destCompact;
+		let toIdx = toAct?.path
+			? destList.findIndex((action) => action.path === toAct.path)
+			: destList.length;
+		if (toIdx < 0) {
+			toIdx = destList.length;
+		}
+		if (fromKp.folderPath === toKp.folderPath && fromIdx < toIdx) {
+			toIdx -= 1;
+		}
+		destList.splice(Math.min(toIdx, destList.length), 0, moved);
+		fromKp.actions = padActions(sourceCompact);
+		if (fromKp.folderPath !== toKp.folderPath) {
+			toKp.actions = padActions(destCompact);
+		}
+	scan.keyplans = padKeyplans(scan.keyplans.filter((item) => item.folderPath));
+	await syncOutlineFromScan(app, scan);
+	return null;
+}
+
+async function syncOutlineFromScan(app: App, scan: GoalFolderScan): Promise<void> {
+	const file = app.vault.getAbstractFileByPath(scan.masterPath);
+	if (!(file instanceof TFile)) {
+		return;
+	}
+	const content = await app.vault.read(file);
+	const next = upsertGoalsFence(content, outlineFromScan(scan));
+	if (next !== content) {
+		await app.vault.modify(file, next);
+	}
+}
+
+function compactActions(keyplan: KeyPlanSlot): ActionSlot[] {
+	return keyplan.actions.filter((action) => !!action.path);
+}
+
+function padActions(list: ActionSlot[]): ActionSlot[] {
+	const actions = emptyActions();
+	list.slice(0, SLOT_COUNT).forEach((action, index) => {
+		actions[index] = action;
+	});
+	return actions;
+}
+
+function padKeyplans(list: KeyPlanSlot[]): KeyPlanSlot[] {
+	const slots = emptyKeyplans();
+	list.slice(0, SLOT_COUNT).forEach((item, index) => {
+		slots[index] = { ...item, index };
+	});
+	return slots;
+}
+
+export function pathIsUnderGoalFolder(filePath: string, goalFolderPath: string): boolean {
+	if (goalFolderPath === "") {
+		return true;
+	}
+	return filePath === goalFolderPath || filePath.startsWith(`${goalFolderPath}/`);
+}

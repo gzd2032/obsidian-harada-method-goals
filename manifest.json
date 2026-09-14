@@ -1,11 +1,10 @@
 {
-	"id": "draw-harada-method",
-	"name": "Draw Harada Method",
-	"version": "1.0.14",
+	"id": "harada-method-goals",
+	"name": "Harada Method Goals",
+	"version": "0.1.0",
 	"minAppVersion": "0.15.0",
-	"description": "This plugin is used to draw the harada method. Create your own 1 goal, 8 plans, and 64 actions",
-	"author": "yildbs",
-	"authorUrl": "https://github.com/yildbs",
-	"fundingUrl": "https://paypal.me/yildbs?country.x=KR&locale.x=ko_KR",
+	"description": "Build a Harada Method chart from a vault folder: one main goal, eight Key Plan folders, and sixty-four action notes.",
+	"author": "Gordon",
+	"authorUrl": "https://github.com/gzd2032/obsidian-harada-method-goals",
 	"isDesktopOnly": false
 }
