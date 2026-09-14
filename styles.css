@@ -189,6 +189,16 @@ table.harada td.harada-complete::after {
     flex: 1;
 }
 
+.harada-title-input {
+    flex: 1;
+    font-size: var(--font-ui-large);
+    font-weight: var(--font-semibold);
+    padding: 4px 8px;
+    border-radius: var(--radius-s);
+    background-color: var(--background-modifier-form-field);
+    border: 1px solid var(--interactive-accent);
+}
+
 .harada-detail-modal .harada-modal-title:hover {
     text-decoration: underline;
 }
@@ -242,4 +252,35 @@ table.harada td.harada-complete::after {
     margin: 4px 0;
     padding: 6px 8px;
     cursor: pointer;
+}
+
+.harada-notes-section {
+    margin-top: 1.25em;
+    margin-bottom: 0.75em;
+}
+
+.harada-notes-header {
+    font-size: var(--font-ui-smaller);
+    font-weight: var(--font-semibold);
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.4em;
+}
+
+.harada-notes-textarea {
+    width: 100%;
+    min-height: 80px;
+    resize: vertical;
+    padding: 8px;
+    font-family: var(--font-text);
+    font-size: var(--font-ui-small);
+    line-height: var(--line-height-normal);
+    border-radius: var(--radius-s);
+    background-color: var(--background-modifier-form-field);
+    border: 1px solid var(--background-modifier-border);
+}
+
+.harada-notes-textarea:focus {
+    border-color: var(--interactive-accent);
 }

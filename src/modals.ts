@@ -1,8 +1,10 @@
 import { App, Modal, Setting, TFile, setIcon } from "obsidian";
 import {
 	appendActionTask,
+	parseActionNotes,
 	parseActionTasks,
 	removeActionTaskLine,
+	updateActionNotes,
 	updateActionTaskLine,
 } from "./goal-folder";
 
@@ -241,14 +243,19 @@ export interface ActionDetailOptions {
 	title: string;
 	path: string;
 	onOpenNote: () => void | Promise<void>;
+	onRename: (newName: string) => Promise<{ title: string; path: string } | null>;
 	onDelete: () => Promise<void>;
 }
 
 class ActionDetailModal extends Modal {
+	private headingEl: HTMLElement | null = null;
 	private listEl: HTMLElement | null = null;
+	private notesTextarea: HTMLTextAreaElement | null = null;
 	private editingIndex: number | null = null;
+	private isEditingTitle = false;
 	private busy = false;
 	private skipBlurCommit = false;
+	private isDeleted = false;
 
 	constructor(
 		app: App,
@@ -262,19 +269,20 @@ class ActionDetailModal extends Modal {
 		contentEl.empty();
 		contentEl.addClass("harada-detail-modal");
 
-		const title = contentEl.createEl("h2", {
-			text: this.options.title,
-			cls: "harada-modal-title",
-			attr: { title: "Open note" },
-		});
-		title.addEventListener("click", () => {
-			this.close();
-			void this.options.onOpenNote();
-		});
+		this.headingEl = contentEl.createDiv({ cls: "harada-modal-heading" });
+		this.renderHeader();
 
 		this.listEl = contentEl.createDiv({ cls: "harada-task-list" });
-		this.editingIndex = -1;
-		void this.renderTasks();
+
+		const notesSection = contentEl.createDiv({ cls: "harada-notes-section" });
+		notesSection.createDiv({ text: "Notes", cls: "harada-notes-header" });
+		this.notesTextarea = notesSection.createEl("textarea", {
+			cls: "harada-notes-textarea",
+			attr: { placeholder: "Add notes...", rows: "4" },
+		});
+		this.notesTextarea.addEventListener("blur", () => {
+			void this.commitNotes();
+		});
 
 		new Setting(contentEl).addButton((btn) =>
 			btn
@@ -284,10 +292,137 @@ class ActionDetailModal extends Modal {
 					void this.deleteAction();
 				}),
 		);
+
+		this.editingIndex = -1;
+		void this.renderTasks();
+		void this.loadNotes();
+	}
+
+	private renderHeader() {
+		if (!this.headingEl) {
+			return;
+		}
+		this.headingEl.empty();
+		if (this.isEditingTitle) {
+			const input = this.headingEl.createEl("input", {
+				type: "text",
+				cls: "harada-title-input",
+			});
+			input.value = this.options.title;
+
+			const save = async () => {
+				const val = input.value.trim();
+				if (val && val !== this.options.title) {
+					const res = await this.options.onRename(val);
+					if (res) {
+						this.options.title = res.title;
+						this.options.path = res.path;
+					}
+				}
+				this.isEditingTitle = false;
+				this.renderHeader();
+			};
+
+			const cancel = () => {
+				this.isEditingTitle = false;
+				this.renderHeader();
+			};
+
+			input.addEventListener("keydown", (e) => {
+				if (e.key === "Enter") {
+					e.preventDefault();
+					void save();
+				} else if (e.key === "Escape") {
+					e.preventDefault();
+					cancel();
+				}
+			});
+
+			const saveBtn = this.headingEl.createEl("button", {
+				cls: "clickable-icon harada-task-btn",
+				attr: { type: "button", "aria-label": "Save action name" },
+			});
+			setIcon(saveBtn, "check");
+			saveBtn.addEventListener("click", () => {
+				void save();
+			});
+
+			const cancelBtn = this.headingEl.createEl("button", {
+				cls: "clickable-icon harada-task-btn",
+				attr: { type: "button", "aria-label": "Cancel" },
+			});
+			setIcon(cancelBtn, "cross");
+			cancelBtn.addEventListener("click", () => {
+				cancel();
+			});
+
+			window.setTimeout(() => {
+				input.focus();
+				input.select();
+			}, 0);
+		} else {
+			const title = this.headingEl.createEl("h2", {
+				text: this.options.title,
+				cls: "harada-modal-title",
+				attr: { title: "Open note" },
+			});
+			title.addEventListener("click", () => {
+				this.close();
+				void this.options.onOpenNote();
+			});
+
+			const editBtn = this.headingEl.createEl("button", {
+				cls: "clickable-icon harada-task-btn",
+				attr: { type: "button", "aria-label": "Rename action" },
+			});
+			setIcon(editBtn, "pencil");
+			editBtn.addEventListener("click", () => {
+				this.isEditingTitle = true;
+				this.renderHeader();
+			});
+		}
 	}
 
 	onClose() {
+		if (!this.isDeleted) {
+			void this.commitNotes();
+		}
 		this.contentEl.empty();
+	}
+
+	private async loadNotes() {
+		if (!this.notesTextarea) {
+			return;
+		}
+		const current = await this.readActionFile();
+		if (!current) {
+			return;
+		}
+		this.notesTextarea.value = parseActionNotes(current.content);
+	}
+
+	private async commitNotes() {
+		if (this.busy || !this.notesTextarea || this.isDeleted) {
+			return;
+		}
+		const text = this.notesTextarea.value;
+		const current = await this.readActionFile();
+		if (!current) {
+			return;
+		}
+		const existing = parseActionNotes(current.content);
+		if (existing === text.trim()) {
+			return;
+		}
+		this.busy = true;
+		try {
+			await this.app.vault.modify(
+				current.file,
+				updateActionNotes(current.content, text),
+			);
+		} finally {
+			this.busy = false;
+		}
 	}
 
 	private async renderTasks() {
@@ -544,6 +679,7 @@ class ActionDetailModal extends Modal {
 		if (!ok) {
 			return;
 		}
+		this.isDeleted = true;
 		this.close();
 		await this.options.onDelete();
 	}

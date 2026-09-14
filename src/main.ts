@@ -24,6 +24,7 @@ import {
 	createKeyPlan,
 	deleteActionNote,
 	deleteKeyPlanFolder,
+	renameActionNote,
 	renameKeyPlanFolder,
 	isMasterNote,
 	isMisnamedMasterNote,
@@ -390,12 +391,20 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 		if (!target.path) {
 			return;
 		}
-		const path = target.path;
-		const title = target.label;
+		let path = target.path;
+		let title = target.label;
 		openActionDetail(this.app, {
 			title,
 			path,
-			onOpenNote: () => this.openBeside(path, sourcePath),
+			onOpenNote: () => this.openInTab(path, sourcePath),
+			onRename: async (newName: string) => {
+				path = await renameActionNote(this.app, path, newName);
+				const file = this.app.vault.getAbstractFileByPath(path);
+				title = file instanceof TFile ? file.basename : newName;
+				await syncGoalsOutline(this.app, scan.masterPath, this.settings);
+				new Notice(`Renamed action to “${title}”`);
+				return { title, path };
+			},
 			onDelete: async () => {
 				await deleteActionNote(this.app, path);
 				await syncGoalsOutline(this.app, scan.masterPath, this.settings);
@@ -448,17 +457,13 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 		});
 	}
 
-	private async openBeside(path: string, sourcePath: string) {
+	private async openInTab(path: string, sourcePath: string) {
 		const file = this.app.vault.getAbstractFileByPath(path);
-		const sourceLeaf = this.app.workspace.getMostRecentLeaf();
-		const leaf = this.app.workspace.getLeaf("split");
+		const leaf = this.app.workspace.getLeaf("tab");
 		if (file instanceof TFile) {
 			await leaf.openFile(file);
 		} else {
-			await this.app.workspace.openLinkText(path, sourcePath, true);
-		}
-		if (sourceLeaf) {
-			this.app.workspace.setActiveLeaf(sourceLeaf, { focus: true });
+			await this.app.workspace.openLinkText(path, sourcePath, false);
 		}
 	}
 

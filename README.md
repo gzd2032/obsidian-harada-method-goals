@@ -39,14 +39,14 @@ Goal Folder (e.g. Marathon)/
 | --- | --- | --- |
 | **Center Goal** (Yellow) | First `# heading` in `goals.md` | Main goal title. Note body serves as description. |
 | **Key Plans** (Green) | Immediate child folders | Click to view actions or rename/delete the plan. Drag to reorder. |
-| **Actions** (White) | Markdown notes inside Key Plan folders | Click to open task checklist popup. Click title to open note. Drag to reorder or move between plans. |
+| **Actions** (White) | Markdown notes inside Key Plan folders | Click to open popup (tasks, notes, rename). Click title to open note. Drag to reorder or move between plans. |
 
 ---
 
 ## Features
 
 - **Add Plans & Actions Directly**: Click any empty cell (`Add plan` or `-`) to create a folder or action note without leaving the chart.
-- **Task Checklist Popup**: Click any filled action cell to view, check off, edit, or delete its `- [ ]` checklist items.
+- **Task & Notes Popup**: Click any filled action cell to manage `- [ ]` checklist items, edit notes, or rename the action.
 - **Visual Progress & Completion**: Action cells fill upward as tasks are completed. When all tasks in a note are done, an **X** is drawn across the cell.
 - **Drag-and-Drop Reordering**: Drag Key Plans or actions to rearrange them. Dragging an action to another Key Plan moves the note to that folder.
 - **Live Outline Sync**: Custom chart order is maintained in the `goals` code block within `goals.md`.
