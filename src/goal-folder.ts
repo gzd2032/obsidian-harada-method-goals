@@ -116,10 +116,15 @@ export function extractGoalsFenceBody(content: string): string {
 	return match?.[1]?.replace(/\n$/, "") ?? "";
 }
 
-export function parseOutlineOrder(text: string): { keyplans: string[]; actions: Map<string, string[]> } {
-	const keyplans: string[] = [];
-	const actions = new Map<string, string[]>();
-	let current: string | null = null;
+export interface OutlineKeyplanSlot {
+	/** Null means an intentional empty Key Plan slot (`-` in the outline). */
+	name: string | null;
+	actions: Array<string | null>;
+}
+
+export function parseOutlineOrder(text: string): OutlineKeyplanSlot[] {
+	const keyplans: OutlineKeyplanSlot[] = [];
+	let current: OutlineKeyplanSlot | null = null;
 	for (const raw of text.split("\n")) {
 		const leading = raw.match(/^(\s*)/)?.[1].length ?? 0;
 		const name = raw.trim();
@@ -131,18 +136,16 @@ export function parseOutlineOrder(text: string): { keyplans: string[]; actions: 
 			continue;
 		}
 		if (level === 1) {
-			current = name;
-			keyplans.push(name);
-			if (!actions.has(name)) {
-				actions.set(name, []);
-			}
+			current = {
+				name: name === EMPTY_LABEL ? null : name,
+				actions: [],
+			};
+			keyplans.push(current);
 		} else if (level >= 2 && current) {
-			const list = actions.get(current) ?? [];
-			list.push(name);
-			actions.set(current, list);
+			current.actions.push(name === EMPTY_LABEL ? null : name);
 		}
 	}
-	return { keyplans, actions };
+	return keyplans;
 }
 
 export interface OutlineRename {
@@ -354,77 +357,131 @@ function taskHasLabel(item: { position: { start: { col: number }; end: { col: nu
 	return item.position.end.col - item.position.start.col > 6;
 }
 
-function applyOutlineOrder(
-	collected: KeyPlanSlot[],
-	outline: { keyplans: string[]; actions: Map<string, string[]> },
-): KeyPlanSlot[] {
-	const byName = new Map(collected.map((item) => [item.name!.toLowerCase(), item]));
-	const ordered: KeyPlanSlot[] = [];
+type OrderedKeyplan =
+	| { kind: "empty" }
+	| { kind: "miss"; actions: Array<string | null> }
+	| { kind: "hit"; keyplan: KeyPlanSlot };
+
+function applyOutlineOrder(collected: KeyPlanSlot[], outline: OutlineKeyplanSlot[]): KeyPlanSlot[] {
+	const byName = new Map(
+		collected
+			.filter((item): item is KeyPlanSlot & { name: string; folderPath: string } => !!item.name && !!item.folderPath)
+			.map((item) => [item.name.toLowerCase(), item]),
+	);
+	const ordered: OrderedKeyplan[] = [];
 	const used = new Set<string>();
-	for (const name of outline.keyplans) {
-		const hit = byName.get(name.toLowerCase());
-		if (!hit || used.has(hit.folderPath ?? "")) {
+
+	for (const slot of outline) {
+		if (!slot.name) {
+			ordered.push({ kind: "empty" });
 			continue;
 		}
-		used.add(hit.folderPath ?? "");
-		ordered.push(orderActions(hit, outline.actions.get(name) ?? outline.actions.get(hit.name ?? "") ?? []));
-	}
-	for (const item of collected) {
-		if (used.has(item.folderPath ?? "")) {
+		const hit = byName.get(slot.name.toLowerCase());
+		if (!hit || used.has(hit.folderPath)) {
+			ordered.push({ kind: "miss", actions: slot.actions });
 			continue;
 		}
-		used.add(item.folderPath ?? "");
-		ordered.push(orderActions(item, outline.actions.get(item.name ?? "") ?? []));
+		used.add(hit.folderPath);
+		ordered.push({ kind: "hit", keyplan: orderActions(hit, slot.actions) });
 	}
+
+	const leftovers = collected.filter(
+		(item): item is KeyPlanSlot & { folderPath: string } => !!item.folderPath && !used.has(item.folderPath),
+	);
+	const missIndexes = ordered
+		.map((slot, index) => (slot.kind === "miss" ? index : -1))
+		.filter((index) => index >= 0);
+
+	// Single unmatched outline name + single unmatched folder => rename into that slot.
+	if (missIndexes.length === 1 && leftovers.length === 1) {
+		const missAt = missIndexes[0];
+		const miss = ordered[missAt];
+		if (miss?.kind === "miss") {
+			ordered[missAt] = { kind: "hit", keyplan: orderActions(leftovers[0], miss.actions) };
+			used.add(leftovers[0].folderPath);
+			leftovers.shift();
+		}
+	}
+
+	for (let i = 0; i < ordered.length; i++) {
+		if (ordered[i]?.kind === "miss") {
+			ordered[i] = { kind: "empty" };
+		}
+	}
+
+	for (const leftover of leftovers) {
+		const emptyAt = ordered.findIndex((slot) => slot.kind === "empty");
+		if (emptyAt >= 0) {
+			ordered[emptyAt] = { kind: "hit", keyplan: orderActions(leftover, []) };
+		} else {
+			ordered.push({ kind: "hit", keyplan: orderActions(leftover, []) });
+		}
+	}
+
 	const slots = emptyKeyplans();
-	ordered.slice(0, SLOT_COUNT).forEach((item, index) => {
-		slots[index] = { ...item, index };
+	ordered.slice(0, SLOT_COUNT).forEach((slot, index) => {
+		if (slot.kind === "hit") {
+			slots[index] = { ...slot.keyplan, index };
+		}
 	});
 	return slots;
 }
 
-function orderActions(keyplan: KeyPlanSlot, names: string[]): KeyPlanSlot {
+type OrderedAction =
+	| { kind: "empty" }
+	| { kind: "miss" }
+	| { kind: "hit"; action: ActionSlot & { name: string; path: string } };
+
+function orderActions(keyplan: KeyPlanSlot, names: Array<string | null>): KeyPlanSlot {
 	const filled = keyplan.actions.filter((action): action is ActionSlot & { name: string; path: string } =>
 		!!action.name && !!action.path,
 	);
 	const byName = new Map(filled.map((action) => [action.name.toLowerCase(), action]));
-	const ordered: Array<ActionSlot | null> = [];
+	const ordered: OrderedAction[] = [];
 	const used = new Set<string>();
+
 	for (const name of names) {
+		if (name === null) {
+			ordered.push({ kind: "empty" });
+			continue;
+		}
 		const hit = byName.get(name.toLowerCase());
 		if (!hit || used.has(hit.path)) {
-			ordered.push(null);
+			ordered.push({ kind: "miss" });
 			continue;
 		}
 		used.add(hit.path);
-		ordered.push(hit);
+		ordered.push({ kind: "hit", action: hit });
 	}
 
 	const leftovers = filled.filter((action) => !used.has(action.path));
-	const missing = ordered
-		.map((action, index) => (action ? -1 : index))
+	const missIndexes = ordered
+		.map((slot, index) => (slot.kind === "miss" ? index : -1))
 		.filter((index) => index >= 0);
 
-	// Single unmatched outline name + single unmatched file => treat as rename into that slot.
-	if (missing.length === 1 && leftovers.length === 1) {
-		ordered[missing[0]] = leftovers[0];
+	if (missIndexes.length === 1 && leftovers.length === 1) {
+		ordered[missIndexes[0]] = { kind: "hit", action: leftovers[0] };
 		leftovers.shift();
-	}
-
-	const compact: ActionSlot[] = [];
-	for (const action of ordered) {
-		if (action) {
-			compact.push(action);
+	} else {
+		for (const index of missIndexes) {
+			ordered[index] = { kind: "empty" };
 		}
-	}
-	for (const action of leftovers) {
-		compact.push(action);
 	}
 
 	const actions = emptyActions();
-	compact.slice(0, SLOT_COUNT).forEach((action, index) => {
-		actions[index] = action;
-	});
+	for (let i = 0; i < ordered.length && i < SLOT_COUNT; i++) {
+		const slot = ordered[i];
+		if (slot?.kind === "hit") {
+			actions[i] = slot.action;
+		}
+	}
+	for (const leftover of leftovers) {
+		const emptyAt = actions.findIndex((action) => !action.path);
+		if (emptyAt === -1) {
+			break;
+		}
+		actions[emptyAt] = leftover;
+	}
 	return { ...keyplan, actions };
 }
 
@@ -715,16 +772,30 @@ export async function createGoalFolder(
 
 export function outlineFromScan(scan: GoalFolderScan): string {
 	const lines = [scan.goalTitle];
-	for (const keyplan of scan.keyplans) {
-		if (!keyplan.name || !keyplan.folderPath) {
+	let lastKeyplan = -1;
+	for (let i = 0; i < scan.keyplans.length; i++) {
+		if (scan.keyplans[i]?.folderPath) {
+			lastKeyplan = i;
+		}
+	}
+	for (let i = 0; i <= lastKeyplan; i++) {
+		const keyplan = scan.keyplans[i];
+		if (!keyplan?.name || !keyplan.folderPath) {
+			lines.push(`  ${EMPTY_LABEL}`);
 			continue;
 		}
 		lines.push(`  ${keyplan.name}`);
-		for (const action of keyplan.actions) {
-			if (!action.name) {
-				continue;
+		let lastAction = -1;
+		for (let j = 0; j < keyplan.actions.length; j++) {
+			if (keyplan.actions[j]?.name && keyplan.actions[j]?.path) {
+				lastAction = j;
 			}
-			lines.push(`    ${action.name}`);
+		}
+		for (let j = 0; j <= lastAction; j++) {
+			const action = keyplan.actions[j];
+			lines.push(
+				`    ${action?.name && action.path ? action.name : EMPTY_LABEL}`,
+			);
 		}
 	}
 	return lines.join("\n");
