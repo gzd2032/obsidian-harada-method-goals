@@ -501,12 +501,15 @@ function matchTaskLine(line: string): TaskLineMatch | null {
 	if (!match) {
 		return null;
 	}
-	const prefix = match[1];
-	const mark = match[2];
-	if (typeof prefix !== "string" || typeof mark !== "string") {
+	const prefixRaw = match[1];
+	const markRaw = match[2];
+	if (typeof prefixRaw !== "string" || typeof markRaw !== "string") {
 		return null;
 	}
-	const text = typeof match[4] === "string" ? match[4] : "";
+	const prefix: string = prefixRaw;
+	const mark: string = markRaw;
+	const textRaw = match[4];
+	const text: string = typeof textRaw === "string" ? textRaw : "";
 	return { prefix, mark, text };
 }
 
@@ -563,7 +566,8 @@ export function updateActionTaskLine(
 	}
 	const text: string =
 		patch.text === undefined ? match.text : patch.text.replace(/\s+/g, " ").trim();
-	const nextLine = `${match.prefix}[${checked ? "x" : " "}] ${text}`.trimEnd();
+	const mark = checked ? "x" : " ";
+	const nextLine: string = `${match.prefix}[${mark}] ${text}`.replace(/\s+$/, "");
 	lines[lineIndex] = nextLine;
 	return lines.join("\n");
 }
@@ -589,8 +593,9 @@ function lastTaskLineIndex(lines: string[]): number {
 }
 
 export function appendActionTask(content: string, text = "", checked = false): string {
-	const label = text.replace(/\s+/g, " ").trim();
-	const line: string = `- [${checked ? "x" : " "}] ${label}`.trimEnd();
+	const label: string = text.replace(/\s+/g, " ").trim();
+	const mark = checked ? "x" : " ";
+	const line: string = `- [${mark}] ${label}`.replace(/\s+$/, "");
 	const lines = content.split("\n");
 	const lastTaskIdx = lastTaskLineIndex(lines);
 	if (lastTaskIdx === -1) {

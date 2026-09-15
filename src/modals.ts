@@ -214,7 +214,7 @@ class ConfirmModal extends Modal {
 			.addButton((btn) =>
 				btn
 					.setButtonText(this.confirmLabel)
-					.setWarning()
+					.setDestructive()
 					.onClick(() => {
 						this.finish(true);
 					}),
@@ -299,7 +299,7 @@ class ActionDetailModal extends Modal {
 			.addButton((btn) =>
 				btn
 					.setButtonText("Delete action")
-					.setWarning()
+					.setDestructive()
 					.onClick(() => {
 						void this.deleteAction();
 					}),
@@ -807,7 +807,7 @@ class PlanDetailModal extends Modal {
 		new Setting(footer).addButton((btn) =>
 			btn
 				.setButtonText("Delete Key Plan")
-				.setWarning()
+				.setDestructive()
 				.onClick(() => {
 					void this.deletePlan();
 				}),
