@@ -569,7 +569,7 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 			leaf = workspace.getRightLeaf(false) ?? workspace.getLeaf("split");
 			await leaf.setViewState({ type: VIEW_TYPE_HARADA_CHART, active: true });
 		}
-		workspace.revealLeaf(leaf);
+		await workspace.revealLeaf(leaf);
 		const view = leaf.view;
 		if (view instanceof HaradaChartView) {
 			await view.renderChart();
