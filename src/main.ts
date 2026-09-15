@@ -34,6 +34,8 @@ import {
 	syncGoalsOutline,
 	type GoalFolderScan,
 	type GoalFolderSettings,
+	type OutlineRename,
+	outlineRenameFromPaths,
 } from "./goal-folder";
 import { openActionDetail, openPlanDetail, promptForName, promptForNewGoal } from "./modals";
 import { HaradaChartView, VIEW_TYPE_HARADA_CHART } from "./chart-view";
@@ -60,6 +62,7 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 	private dragPayload: { sourcePath: string; kind: "keyplan" | "action"; keyplanIndex: number; actionIndex?: number } | null = null;
 	/** Suppress cell clicks briefly after a drop; timestamp self-heals if dragend never fires. */
 	private ignoreCellClickUntil = 0;
+	private pendingOutlineRename: OutlineRename | null = null;
 	private warnedMisnamed = new Set<string>();
 	private embeddedCharts = new Map<HTMLElement, HaradaMethod>();
 
@@ -102,8 +105,13 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 			this.registerDomEvent(document, "dragstart", (event) => this.onChartDragStart(event), true);
 			this.registerDomEvent(document, "dragover", (event) => this.onChartDragOver(event), true);
 			this.registerDomEvent(document, "drop", (event) => this.onChartDrop(event), true);
-			this.registerDomEvent(document, "dragend", () => this.finishChartDrag());
-			this.registerDomEvent(window, "pointercancel", () => this.finishChartDrag(), true);
+			this.registerDomEvent(document, "dragend", () => {
+				this.clearDropHighlights();
+				// Delay clearing so drop can still read dragPayload if events race.
+				window.setTimeout(() => {
+					this.dragPayload = null;
+				}, 50);
+			});
 
 			this.registerMarkdownPostProcessor((element, context) => {
 				try {
@@ -432,10 +440,16 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 				  }
 				: undefined,
 			onRename: async (newName: string) => {
+				const oldName = title;
 				path = await renameActionNote(this.app, path, newName);
 				const file = this.app.vault.getAbstractFileByPath(path);
 				title = file instanceof TFile ? file.basename : newName;
-				await syncGoalsOutline(this.app, scan.masterPath, this.settings);
+				await syncGoalsOutline(this.app, scan.masterPath, this.settings, {
+					kind: "action",
+					oldName,
+					newName: title,
+					keyplanName: keyPlanName,
+				});
 				new Notice(`Renamed action to “${title}”`);
 				return { title, path };
 			},
@@ -482,9 +496,14 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 				if (!name) {
 					return null;
 				}
+				const oldName = title;
 				folderPath = await renameKeyPlanFolder(this.app, folderPath, name);
 				title = folderPath.split("/").pop() ?? name;
-				await syncGoalsOutline(this.app, scan.masterPath, this.settings);
+				await syncGoalsOutline(this.app, scan.masterPath, this.settings, {
+					kind: "keyplan",
+					oldName,
+					newName: title,
+				});
 				new Notice(`Renamed Key Plan to “${title}”`);
 				return title;
 			},
@@ -616,7 +635,7 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 		this.ignoreCellClickUntil = Date.now() + 400;
 		const scan = await scanGoalFolderFromFile(this.app, payload.sourcePath, this.settings);
 		if (!scan) {
-			this.finishChartDrag();
+			this.dragPayload = null;
 			return;
 		}
 		const error = await applyChartDrop(
@@ -631,15 +650,10 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 			},
 			this.settings,
 		);
-		this.finishChartDrag();
+		this.dragPayload = null;
 		if (error) {
 			new Notice(error);
 		}
-	}
-
-	private finishChartDrag() {
-		this.clearDropHighlights();
-		this.dragPayload = null;
 	}
 
 	private chartCellFromEvent(event: Event, selector: string): HTMLElement | null {
@@ -691,20 +705,28 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 		if (!this.fileAffectsOpenGoal(file.path) && !(oldPath && this.fileAffectsOpenGoal(oldPath))) {
 			return;
 		}
+		if (syncOutline && oldPath) {
+			const rename = outlineRenameFromPaths(oldPath, file);
+			if (rename) {
+				this.pendingOutlineRename = rename;
+			}
+		}
 		if (this.refreshTimer) {
 			window.clearTimeout(this.refreshTimer);
 		}
 		this.refreshTimer = window.setTimeout(() => {
 			this.refreshTimer = null;
 			if (syncOutline) {
-				void this.syncOpenGoalOutlines().then(() => this.rerenderGoalViews());
+				const rename = this.pendingOutlineRename;
+				this.pendingOutlineRename = null;
+				void this.syncOpenGoalOutlines(rename ?? undefined).then(() => this.rerenderGoalViews());
 			} else {
 				this.rerenderGoalViews();
 			}
 		}, 150);
 	}
 
-	private async syncOpenGoalOutlines() {
+	private async syncOpenGoalOutlines(rename?: OutlineRename) {
 		const seen = new Set<string>();
 		if (this.lastMasterPath) {
 			seen.add(this.lastMasterPath);
@@ -720,7 +742,7 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 			seen.add(view.file.path);
 		}
 		for (const path of seen) {
-			await syncGoalsOutline(this.app, path, this.settings);
+			await syncGoalsOutline(this.app, path, this.settings, rename);
 		}
 	}
 
