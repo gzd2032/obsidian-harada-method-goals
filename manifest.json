@@ -1,8 +1,8 @@
 {
 	"id": "harada-method-goals",
 	"name": "Harada Method Goals",
-	"version": "1.0.2",
-	"minAppVersion": "1.7.2",
+	"version": "1.0.3",
+	"minAppVersion": "1.13.0",
 	"description": "Build a Harada Method chart from a vault folder: one main goal, eight Key Plan folders, and sixty-four action notes.",
 	"author": "Gordon",
 	"authorUrl": "https://github.com/gzd2032",
