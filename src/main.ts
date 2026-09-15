@@ -5,7 +5,6 @@ import {
 	Notice,
 	Plugin,
 	PluginSettingTab,
-	Setting,
 	TAbstractFile,
 	TFile,
 	type SettingDefinitionItem,
@@ -969,94 +968,5 @@ class HaradaMethodGoalsSettingTab extends PluginSettingTab {
 				return;
 		}
 		await this.plugin.saveSettings();
-	}
-
-	display(): void {
-		const { containerEl } = this;
-		containerEl.empty();
-
-		new Setting(containerEl).setName("Files").setHeading();
-
-		new Setting(containerEl)
-			.setName("Master note filename")
-			.setDesc("Note that hosts the chart. Default: goals.md")
-			.addText((text) =>
-				text
-					.setPlaceholder("goals.md")
-					.setValue(this.plugin.settings.masterNoteFilename)
-					.onChange(async (value) => {
-						this.plugin.settings.masterNoteFilename = value.trim() || "goals.md";
-						await this.plugin.saveSettings();
-					}),
-			);
-
-		new Setting(containerEl)
-			.setName("Parent folder")
-			.setDesc("Vault-relative path for new goals (for example Planner/Goal). Leave empty to create at the vault root.")
-			.addText((text) =>
-				text
-					.setPlaceholder("Planner/Goal")
-					.setValue(this.plugin.settings.parentFolder)
-					.onChange(async (value) => {
-						this.plugin.settings.parentFolder = value.trim();
-						await this.plugin.saveSettings();
-					}),
-			);
-
-		new Setting(containerEl).setName("Colors").setHeading();
-
-		new Setting(containerEl)
-			.setName("Goal background color")
-			.addColorPicker((cb) =>
-				cb.setValue(this.plugin.settings.goalBackgroundColor).onChange(async (value) => {
-					this.plugin.settings.goalBackgroundColor = value;
-					await this.plugin.saveSettings();
-				}),
-			);
-
-		new Setting(containerEl)
-			.setName("Goal text color")
-			.addColorPicker((cb) =>
-				cb.setValue(this.plugin.settings.goalTextColor).onChange(async (value) => {
-					this.plugin.settings.goalTextColor = value;
-					await this.plugin.saveSettings();
-				}),
-			);
-
-		new Setting(containerEl)
-			.setName("Key Plan background color")
-			.addColorPicker((cb) =>
-				cb.setValue(this.plugin.settings.keyplanBackgroundColor).onChange(async (value) => {
-					this.plugin.settings.keyplanBackgroundColor = value;
-					await this.plugin.saveSettings();
-				}),
-			);
-
-		new Setting(containerEl)
-			.setName("Key Plan text color")
-			.addColorPicker((cb) =>
-				cb.setValue(this.plugin.settings.keyplanTextColor).onChange(async (value) => {
-					this.plugin.settings.keyplanTextColor = value;
-					await this.plugin.saveSettings();
-				}),
-			);
-
-		new Setting(containerEl)
-			.setName("Action background color")
-			.addColorPicker((cb) =>
-				cb.setValue(this.plugin.settings.actionBackgroundColor).onChange(async (value) => {
-					this.plugin.settings.actionBackgroundColor = value;
-					await this.plugin.saveSettings();
-				}),
-			);
-
-		new Setting(containerEl)
-			.setName("Action text color")
-			.addColorPicker((cb) =>
-				cb.setValue(this.plugin.settings.actionTextColor).onChange(async (value) => {
-					this.plugin.settings.actionTextColor = value;
-					await this.plugin.saveSettings();
-				}),
-			);
 	}
 }
