@@ -67,10 +67,10 @@ class NamePromptModal extends Modal {
 		contentEl.createEl("h2", { text: this.heading });
 
 		const input = contentEl.createEl("input", {
+			cls: "harada-name-input",
 			type: "text",
 			placeholder: this.placeholder,
 		});
-		input.style.width = "100%";
 		input.value = this.options.initial ?? "";
 		input.addEventListener("keydown", (event) => {
 			if (event.key === "Enter") {

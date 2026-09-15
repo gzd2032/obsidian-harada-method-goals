@@ -180,14 +180,20 @@ function applyCellColors(cell: HTMLElement, kind: HaradaCellKind, colors?: Harad
 		return;
 	}
 	if (kind === "goal") {
-		cell.style.backgroundColor = colors.goalBackgroundColor;
-		cell.style.color = colors.goalTextColor;
+		cell.setCssStyles({
+			backgroundColor: colors.goalBackgroundColor,
+			color: colors.goalTextColor,
+		});
 	} else if (kind === "keyplan") {
-		cell.style.backgroundColor = colors.keyplanBackgroundColor;
-		cell.style.color = colors.keyplanTextColor;
+		cell.setCssStyles({
+			backgroundColor: colors.keyplanBackgroundColor,
+			color: colors.keyplanTextColor,
+		});
 	} else {
-		cell.style.backgroundColor = colors.actionBackgroundColor;
-		cell.style.color = colors.actionTextColor;
+		cell.setCssStyles({
+			backgroundColor: colors.actionBackgroundColor,
+			color: colors.actionTextColor,
+		});
 	}
 }
 
@@ -229,19 +235,16 @@ export class HaradaMethod extends MarkdownRenderChild {
 	}
 
 	private renderTable(chart: HaradaChartData): HTMLTableElement {
-		const table = document.createElement("table");
-		table.id = "harada";
-		table.classList.add("harada");
-		if (this.options.folderChart) {
-			table.classList.add("harada-folder");
-		}
+		const table = createEl("table", {
+			cls: this.options.folderChart ? ["harada", "harada-folder"] : "harada",
+			attr: { id: "harada" },
+		});
 
 		for (let y = 0; y < 9; y++) {
-			const row = document.createElement("tr");
+			const row = table.createEl("tr");
 			for (let x = 0; x < 9; x++) {
 				row.appendChild(this.renderCell(chart, x, y));
 			}
-			table.appendChild(row);
 		}
 
 		return table;
@@ -249,13 +252,12 @@ export class HaradaMethod extends MarkdownRenderChild {
 
 	private renderCell(chart: HaradaChartData, x: number, y: number): HTMLTableCellElement {
 		const desc = describeCell(x, y);
-		const cell = document.createElement("td");
-		cell.classList.add("cell", desc.kind);
+		const cell = createEl("td", { cls: ["cell", desc.kind] });
 
-		if (y % 3 === 0) cell.classList.add("top");
-		if (y % 3 === 2) cell.classList.add("bottom");
-		if (x % 3 === 0) cell.classList.add("left");
-		if (x % 3 === 2) cell.classList.add("right");
+		if (y % 3 === 0) cell.addClass("top");
+		if (y % 3 === 2) cell.addClass("bottom");
+		if (x % 3 === 0) cell.addClass("left");
+		if (x % 3 === 2) cell.addClass("right");
 
 		applyCellColors(cell, desc.kind, this.options.colors);
 
@@ -318,7 +320,8 @@ export class HaradaMethod extends MarkdownRenderChild {
 		target: HaradaClickTarget,
 		content: string,
 	) {
-		fillWikilink(label, content);
+		label.empty();
+		label.createSpan({ text: content });
 		this.writeCellData(cell, target);
 		if (target.exists) {
 			cell.title = target.progress
@@ -343,10 +346,10 @@ export class HaradaMethod extends MarkdownRenderChild {
 		}
 		if (target.progress && target.progress.total > 0) {
 			const pct = Math.round((100 * target.progress.done) / target.progress.total);
-			cell.classList.add("harada-progress");
-			cell.style.backgroundImage = `linear-gradient(to top, color-mix(in srgb, currentColor 16%, transparent) ${pct}%, transparent ${pct}%)`;
+			cell.addClass("harada-progress");
+			cell.setCssProps({ "--harada-progress": `${pct}%` });
 			if (target.progress.done >= target.progress.total) {
-				cell.classList.add("harada-complete");
+				cell.addClass("harada-complete");
 			}
 		}
 
@@ -384,7 +387,7 @@ export class HaradaMethod extends MarkdownRenderChild {
 	private fitCellLabels(table: HTMLTableElement) {
 		window.requestAnimationFrame(() => {
 			table.querySelectorAll("td.cell").forEach((node) => {
-				if (node instanceof HTMLElement) {
+				if (node.instanceOf(HTMLElement)) {
 					fitCellLabel(node);
 				}
 			});
@@ -394,10 +397,10 @@ export class HaradaMethod extends MarkdownRenderChild {
 
 function fitCellLabel(cell: HTMLElement) {
 	const label = cell.querySelector(":scope > .harada-label");
-	if (!(label instanceof HTMLElement)) {
+	if (!label?.instanceOf(HTMLElement)) {
 		return;
 	}
-	label.style.fontSize = "";
+	label.setCssStyles({ fontSize: "" });
 	if (label.clientWidth < 4 || label.clientHeight < 4) {
 		return;
 	}
@@ -405,7 +408,7 @@ function fitCellLabel(cell: HTMLElement) {
 	const minSide = Math.min(label.clientWidth, label.clientHeight);
 	const start = Math.max(8, minSide * fontRatioFor(cell));
 	const minPx = Math.max(7, minSide * 0.08);
-	label.style.fontSize = `${start}px`;
+	label.setCssStyles({ fontSize: `${start}px` });
 	if (fitsLabel(label)) {
 		return;
 	}
@@ -415,7 +418,7 @@ function fitCellLabel(cell: HTMLElement) {
 	let best = minPx;
 	while (hi - lo > 0.25) {
 		const mid = (lo + hi) / 2;
-		label.style.fontSize = `${mid}px`;
+		label.setCssStyles({ fontSize: `${mid}px` });
 		if (fitsLabel(label)) {
 			best = mid;
 			lo = mid;
@@ -423,9 +426,9 @@ function fitCellLabel(cell: HTMLElement) {
 			hi = mid;
 		}
 	}
-	label.style.fontSize = `${best}px`;
+	label.setCssStyles({ fontSize: `${best}px` });
 	if (!fitsLabel(label) && best > minPx) {
-		label.style.fontSize = `${Math.max(minPx, best - 0.5)}px`;
+		label.setCssStyles({ fontSize: `${Math.max(minPx, best - 0.5)}px` });
 	}
 }
 
@@ -444,7 +447,7 @@ function fontRatioFor(cell: HTMLElement): number {
 
 function fitsLabel(label: HTMLElement): boolean {
 	const inner = label.firstElementChild;
-	if (!(inner instanceof HTMLElement) || !inner.textContent) {
+	if (!inner?.instanceOf(HTMLElement) || !inner.textContent) {
 		return true;
 	}
 	const style = window.getComputedStyle(label);
