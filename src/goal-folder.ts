@@ -561,9 +561,10 @@ export function updateActionTaskLine(
 	} else if (typeof patch.checked === "boolean") {
 		checked = patch.checked;
 	}
-	const text =
+	const text: string =
 		patch.text === undefined ? match.text : patch.text.replace(/\s+/g, " ").trim();
-	lines[lineIndex] = `${match.prefix}[${checked ? "x" : " "}] ${text}`.trimEnd();
+	const nextLine = `${match.prefix}[${checked ? "x" : " "}] ${text}`.trimEnd();
+	lines[lineIndex] = nextLine;
 	return lines.join("\n");
 }
 
@@ -576,15 +577,22 @@ export function removeActionTaskLine(content: string, lineIndex: number): string
 	return lines.join("\n");
 }
 
-export function appendActionTask(content: string, text = "", checked = false): string {
-	const line = `- [${checked ? "x" : " "}] ${text.replace(/\s+/g, " ").trim()}`.trimEnd();
-	const lines = content.split("\n");
+function lastTaskLineIndex(lines: string[]): number {
 	let lastTaskIdx = -1;
 	for (let i = 0; i < lines.length; i++) {
-		if (TASK_LINE_RE.test(lines[i])) {
+		const candidate = lines[i];
+		if (candidate !== undefined && TASK_LINE_RE.test(candidate)) {
 			lastTaskIdx = i;
 		}
 	}
+	return lastTaskIdx;
+}
+
+export function appendActionTask(content: string, text = "", checked = false): string {
+	const label = text.replace(/\s+/g, " ").trim();
+	const line: string = `- [${checked ? "x" : " "}] ${label}`.trimEnd();
+	const lines = content.split("\n");
+	const lastTaskIdx = lastTaskLineIndex(lines);
 	if (lastTaskIdx === -1) {
 		const trimmed = content.trim();
 		if (!trimmed) {
@@ -598,12 +606,7 @@ export function appendActionTask(content: string, text = "", checked = false): s
 
 export function parseActionNotes(content: string): string {
 	const lines = content.split("\n");
-	let lastTaskIdx = -1;
-	for (let i = 0; i < lines.length; i++) {
-		if (TASK_LINE_RE.test(lines[i])) {
-			lastTaskIdx = i;
-		}
-	}
+	const lastTaskIdx = lastTaskLineIndex(lines);
 	if (lastTaskIdx === -1) {
 		return content.trim();
 	}
@@ -612,12 +615,7 @@ export function parseActionNotes(content: string): string {
 
 export function updateActionNotes(content: string, notes: string): string {
 	const lines = content.split("\n");
-	let lastTaskIdx = -1;
-	for (let i = 0; i < lines.length; i++) {
-		if (TASK_LINE_RE.test(lines[i])) {
-			lastTaskIdx = i;
-		}
-	}
+	const lastTaskIdx = lastTaskLineIndex(lines);
 	const cleanNotes = notes.trim();
 	if (lastTaskIdx === -1) {
 		return cleanNotes ? `${cleanNotes}\n` : "";
@@ -779,30 +777,44 @@ export async function applyChartDrop(
 		return "Drop a Key Plan on a Key Plan, or an action on an action.";
 	}
 	if (from.kind === "keyplan") {
-		const compact = scan.keyplans.filter((item) => item.folderPath);
+		if (from.keyplanIndex === to.keyplanIndex) {
+			return null;
+		}
 		const fromItem = scan.keyplans[from.keyplanIndex];
-		const toItem = scan.keyplans[to.keyplanIndex];
 		if (!fromItem?.folderPath) {
 			return "That Key Plan cannot be moved.";
 		}
-		const fromCompact = compact.findIndex((item) => item.folderPath === fromItem.folderPath);
-		let toCompact = compact.findIndex((item) => item.folderPath === toItem?.folderPath);
-		if (fromCompact < 0) {
-			return "That Key Plan cannot be moved.";
-		}
-		if (toCompact < 0) {
-			toCompact = compact.length;
-		}
-		const [moved] = compact.splice(fromCompact, 1);
-		compact.splice(Math.min(toCompact, compact.length), 0, moved);
-		scan.keyplans = padKeyplans(compact);
+		const empty = emptyKeyplans()[to.keyplanIndex] ?? emptyKeyplans()[0];
+		const toItem = scan.keyplans[to.keyplanIndex] ?? empty;
+		scan.keyplans[from.keyplanIndex] = {
+			...toItem,
+			index: from.keyplanIndex,
+		};
+		scan.keyplans[to.keyplanIndex] = {
+			...fromItem,
+			index: to.keyplanIndex,
+		};
 		await syncOutlineFromScan(app, scan);
+		return null;
+	}
+
+	if (
+		from.actionIndex === undefined ||
+		to.actionIndex === undefined ||
+		from.actionIndex < 0 ||
+		to.actionIndex < 0 ||
+		from.actionIndex >= SLOT_COUNT ||
+		to.actionIndex >= SLOT_COUNT
+	) {
+		return "That action cannot be moved.";
+	}
+	if (from.keyplanIndex === to.keyplanIndex && from.actionIndex === to.actionIndex) {
 		return null;
 	}
 
 	const fromKp = scan.keyplans[from.keyplanIndex];
 	const toKp = scan.keyplans[to.keyplanIndex];
-	const fromAct = fromKp?.actions[from.actionIndex ?? -1];
+	const fromAct = fromKp?.actions[from.actionIndex];
 	if (!fromKp?.folderPath || !fromAct?.path || !fromAct.name) {
 		return "That action cannot be moved.";
 	}
@@ -810,46 +822,92 @@ export async function applyChartDrop(
 		return "Create the destination Key Plan first.";
 	}
 
-	let destPath = fromAct.path;
-	if (fromKp.folderPath !== toKp.folderPath) {
-		const destActions = toKp.actions.filter((action) => action.path).length;
-		if (destActions >= SLOT_COUNT) {
-			return "That Key Plan already has eight actions.";
-		}
-		const file = app.vault.getAbstractFileByPath(fromAct.path);
-		if (!(file instanceof TFile)) {
-			return "Could not find that action note.";
-		}
-		destPath = uniquePath(app, toKp.folderPath, fromAct.name, false);
-		await app.fileManager.renameFile(file, destPath);
+	const filledFrom: ActionSlot & { name: string; path: string } = {
+		name: fromAct.name,
+		path: fromAct.path,
+		progress: fromAct.progress,
+	};
+	const toAct = toKp.actions[to.actionIndex] ?? { name: null, path: null };
+	const error = await swapActionFiles(
+		app,
+		fromKp,
+		from.actionIndex,
+		filledFrom,
+		toKp,
+		to.actionIndex,
+		toAct,
+	);
+	if (error) {
+		return error;
+	}
+	await syncOutlineFromScan(app, scan);
+	return null;
+}
+
+async function swapActionFiles(
+	app: App,
+	fromKp: KeyPlanSlot,
+	fromIdx: number,
+	fromAct: ActionSlot & { name: string; path: string },
+	toKp: KeyPlanSlot,
+	toIdx: number,
+	toAct: ActionSlot,
+): Promise<string | null> {
+	if (fromKp.folderPath === toKp.folderPath) {
+		fromKp.actions[fromIdx] = {
+			name: toAct.name,
+			path: toAct.path,
+			progress: toAct.progress,
+		};
+		toKp.actions[toIdx] = {
+			name: fromAct.name,
+			path: fromAct.path,
+			progress: fromAct.progress,
+		};
+		return null;
 	}
 
-	const sourceCompact = compactActions(fromKp);
-	const destCompact = fromKp.folderPath === toKp.folderPath ? sourceCompact : compactActions(toKp);
-	const fromIdx = sourceCompact.findIndex((action) => action.path === fromAct.path);
-	if (fromIdx < 0) {
-		return "That action cannot be moved.";
+	const fromFile = app.vault.getAbstractFileByPath(fromAct.path);
+	if (!(fromFile instanceof TFile)) {
+		return "Could not find that action note.";
 	}
-		const [moved] = sourceCompact.splice(fromIdx, 1);
-		moved.path = destPath;
-		const toAct = toKp.actions[to.actionIndex ?? -1];
-		const destList = fromKp.folderPath === toKp.folderPath ? sourceCompact : destCompact;
-		let toIdx = toAct?.path
-			? destList.findIndex((action) => action.path === toAct.path)
-			: destList.length;
-		if (toIdx < 0) {
-			toIdx = destList.length;
+
+	if (toAct.path && toAct.name) {
+		const toFile = app.vault.getAbstractFileByPath(toAct.path);
+		if (!(toFile instanceof TFile)) {
+			return "Could not find the destination action note.";
 		}
-		if (fromKp.folderPath === toKp.folderPath && fromIdx < toIdx) {
-			toIdx -= 1;
+		const tempPath = uniquePath(app, fromKp.folderPath ?? "", `${fromAct.name} swap-tmp`, false);
+		await app.fileManager.renameFile(fromFile, tempPath);
+		const toNewPath = uniquePath(app, fromKp.folderPath ?? "", toAct.name, false);
+		await app.fileManager.renameFile(toFile, toNewPath);
+		const tempFile = app.vault.getAbstractFileByPath(tempPath);
+		if (!(tempFile instanceof TFile)) {
+			return "Could not finish swapping those actions.";
 		}
-		destList.splice(Math.min(toIdx, destList.length), 0, moved);
-		fromKp.actions = padActions(sourceCompact);
-		if (fromKp.folderPath !== toKp.folderPath) {
-			toKp.actions = padActions(destCompact);
-		}
-	scan.keyplans = padKeyplans(scan.keyplans.filter((item) => item.folderPath));
-	await syncOutlineFromScan(app, scan);
+		const fromNewPath = uniquePath(app, toKp.folderPath ?? "", fromAct.name, false);
+		await app.fileManager.renameFile(tempFile, fromNewPath);
+		fromKp.actions[fromIdx] = {
+			name: toAct.name,
+			path: toNewPath,
+			progress: toAct.progress,
+		};
+		toKp.actions[toIdx] = {
+			name: fromAct.name,
+			path: fromNewPath,
+			progress: fromAct.progress,
+		};
+		return null;
+	}
+
+	const fromNewPath = uniquePath(app, toKp.folderPath ?? "", fromAct.name, false);
+	await app.fileManager.renameFile(fromFile, fromNewPath);
+	fromKp.actions[fromIdx] = { name: null, path: null };
+	toKp.actions[toIdx] = {
+		name: fromAct.name,
+		path: fromNewPath,
+		progress: fromAct.progress,
+	};
 	return null;
 }
 
@@ -863,26 +921,6 @@ async function syncOutlineFromScan(app: App, scan: GoalFolderScan): Promise<void
 	if (next !== content) {
 		await app.vault.modify(file, next);
 	}
-}
-
-function compactActions(keyplan: KeyPlanSlot): ActionSlot[] {
-	return keyplan.actions.filter((action) => !!action.path);
-}
-
-function padActions(list: ActionSlot[]): ActionSlot[] {
-	const actions = emptyActions();
-	list.slice(0, SLOT_COUNT).forEach((action, index) => {
-		actions[index] = action;
-	});
-	return actions;
-}
-
-function padKeyplans(list: KeyPlanSlot[]): KeyPlanSlot[] {
-	const slots = emptyKeyplans();
-	list.slice(0, SLOT_COUNT).forEach((item, index) => {
-		slots[index] = { ...item, index };
-	});
-	return slots;
 }
 
 export function pathIsUnderGoalFolder(filePath: string, goalFolderPath: string): boolean {
