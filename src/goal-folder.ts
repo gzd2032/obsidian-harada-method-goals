@@ -1,4 +1,4 @@
-import { App, TFile, TFolder, normalizePath } from "obsidian";
+import { App, TAbstractFile, TFile, TFolder, normalizePath } from "obsidian";
 
 export const SLOT_COUNT = 8;
 export const EMPTY_LABEL = "-";
@@ -143,6 +143,89 @@ export function parseOutlineOrder(text: string): { keyplans: string[]; actions: 
 		}
 	}
 	return { keyplans, actions };
+}
+
+export interface OutlineRename {
+	kind: "action" | "keyplan";
+	oldName: string;
+	newName: string;
+	/** When set, only rename the action under this Key Plan. */
+	keyplanName?: string;
+}
+
+/** Rewrite a goals-outline fence body so a rename keeps the same slot. */
+export function applyOutlineRename(outlineText: string, rename: OutlineRename): string {
+	const oldName = rename.oldName.trim();
+	const newName = rename.newName.trim();
+	if (!oldName || !newName || oldName.toLowerCase() === newName.toLowerCase()) {
+		return outlineText;
+	}
+
+	const lines = outlineText.split("\n");
+	let currentKeyplan: string | null = null;
+	let replaced = false;
+
+	const next = lines.map((raw) => {
+		if (replaced) {
+			return raw;
+		}
+		const leading = raw.match(/^(\s*)/)?.[1].length ?? 0;
+		const name = raw.trim();
+		if (!name) {
+			return raw;
+		}
+		const level = leading / 2;
+		if (!Number.isInteger(level)) {
+			return raw;
+		}
+		if (level === 1) {
+			currentKeyplan = name;
+			if (rename.kind === "keyplan" && name.toLowerCase() === oldName.toLowerCase()) {
+				replaced = true;
+				return `${" ".repeat(leading)}${newName}`;
+			}
+			return raw;
+		}
+		if (rename.kind === "action" && level >= 2 && name.toLowerCase() === oldName.toLowerCase()) {
+			if (
+				rename.keyplanName &&
+				currentKeyplan?.toLowerCase() !== rename.keyplanName.toLowerCase()
+			) {
+				return raw;
+			}
+			replaced = true;
+			return `${" ".repeat(leading)}${newName}`;
+		}
+		return raw;
+	});
+
+	return next.join("\n");
+}
+
+export function outlineRenameFromPaths(
+	oldPath: string,
+	file: TAbstractFile,
+): OutlineRename | null {
+	const oldParts = oldPath.split("/").filter(Boolean);
+	if (file instanceof TFile && file.extension === "md") {
+		const oldFile = oldParts[oldParts.length - 1] ?? "";
+		const oldName = oldFile.replace(/\.md$/i, "");
+		const newName = file.basename;
+		if (!oldName || oldName.toLowerCase() === newName.toLowerCase()) {
+			return null;
+		}
+		const keyplanName = oldParts.length >= 2 ? oldParts[oldParts.length - 2] : undefined;
+		return { kind: "action", oldName, newName, keyplanName };
+	}
+	if (file instanceof TFolder) {
+		const oldName = oldParts[oldParts.length - 1] ?? "";
+		const newName = file.name;
+		if (!oldName || oldName.toLowerCase() === newName.toLowerCase()) {
+			return null;
+		}
+		return { kind: "keyplan", oldName, newName };
+	}
+	return null;
 }
 
 export async function scanGoalFolderFromFile(
@@ -305,25 +388,41 @@ function orderActions(keyplan: KeyPlanSlot, names: string[]): KeyPlanSlot {
 		!!action.name && !!action.path,
 	);
 	const byName = new Map(filled.map((action) => [action.name.toLowerCase(), action]));
-	const ordered: ActionSlot[] = [];
+	const ordered: Array<ActionSlot | null> = [];
 	const used = new Set<string>();
 	for (const name of names) {
 		const hit = byName.get(name.toLowerCase());
 		if (!hit || used.has(hit.path)) {
+			ordered.push(null);
 			continue;
 		}
 		used.add(hit.path);
 		ordered.push(hit);
 	}
-	for (const action of filled) {
-		if (used.has(action.path)) {
-			continue;
-		}
-		used.add(action.path);
-		ordered.push(action);
+
+	const leftovers = filled.filter((action) => !used.has(action.path));
+	const missing = ordered
+		.map((action, index) => (action ? -1 : index))
+		.filter((index) => index >= 0);
+
+	// Single unmatched outline name + single unmatched file => treat as rename into that slot.
+	if (missing.length === 1 && leftovers.length === 1) {
+		ordered[missing[0]] = leftovers[0];
+		leftovers.shift();
 	}
+
+	const compact: ActionSlot[] = [];
+	for (const action of ordered) {
+		if (action) {
+			compact.push(action);
+		}
+	}
+	for (const action of leftovers) {
+		compact.push(action);
+	}
+
 	const actions = emptyActions();
-	ordered.slice(0, SLOT_COUNT).forEach((action, index) => {
+	compact.slice(0, SLOT_COUNT).forEach((action, index) => {
 		actions[index] = action;
 	});
 	return { ...keyplan, actions };
@@ -643,16 +742,26 @@ export async function syncGoalsOutline(
 	app: App,
 	masterPath: string,
 	settings: GoalFolderSettings,
+	rename?: OutlineRename,
 ): Promise<void> {
-	const scan = await scanGoalFolderFromFile(app, masterPath, settings);
-	if (!scan) {
-		return;
-	}
 	const file = app.vault.getAbstractFileByPath(masterPath);
 	if (!(file instanceof TFile)) {
 		return;
 	}
-	const content = await app.vault.read(file);
+	let content = await app.vault.read(file);
+	let outline = extractGoalsFenceBody(content);
+	if (rename) {
+		const patched = applyOutlineRename(outline, rename);
+		if (patched !== outline) {
+			outline = patched;
+			content = upsertGoalsFence(content, patched);
+		}
+	}
+	const scan = scanGoalFolder(app, masterPath, settings, outline);
+	if (!scan) {
+		return;
+	}
+	await enrichTaskProgress(app, scan);
 	const next = upsertGoalsFence(content, outlineFromScan(scan));
 	if (next !== content) {
 		await app.vault.modify(file, next);
