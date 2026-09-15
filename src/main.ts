@@ -8,7 +8,7 @@ import {
 	Setting,
 	TAbstractFile,
 	TFile,
-	WorkspaceLeaf,
+	type SettingDefinitionItem,
 } from "obsidian";
 import {
 	chartFromScan,
@@ -58,11 +58,16 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 	private lastCellActivate = 0;
 	private lastMasterPath: string | null = null;
 	private dragPayload: { sourcePath: string; kind: "keyplan" | "action"; keyplanIndex: number; actionIndex?: number } | null = null;
-	private dragMoved = false;
+	/** Suppress cell clicks briefly after a drop; timestamp self-heals if dragend never fires. */
+	private ignoreCellClickUntil = 0;
 	private warnedMisnamed = new Set<string>();
 	private embeddedCharts = new Map<HTMLElement, HaradaMethod>();
 
-	async onload() {
+	onload() {
+		void this.bootstrap();
+	}
+
+	private async bootstrap() {
 		try {
 			this.refreshTimer = null;
 			await this.loadSettings();
@@ -97,13 +102,8 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 			this.registerDomEvent(document, "dragstart", (event) => this.onChartDragStart(event), true);
 			this.registerDomEvent(document, "dragover", (event) => this.onChartDragOver(event), true);
 			this.registerDomEvent(document, "drop", (event) => this.onChartDrop(event), true);
-			this.registerDomEvent(document, "dragend", () => {
-				this.clearDropHighlights();
-				window.setTimeout(() => {
-					this.dragPayload = null;
-					this.dragMoved = false;
-				}, 50);
-			});
+			this.registerDomEvent(document, "dragend", () => this.finishChartDrag());
+			this.registerDomEvent(window, "pointercancel", () => this.finishChartDrag(), true);
 
 			this.registerMarkdownPostProcessor((element, context) => {
 				try {
@@ -159,15 +159,19 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 		}
 	}
 
-	async applySettings() {
+	applySettings() {
 		if (typeof document === "undefined") {
 			return;
 		}
 		const paint = (className: string, background: string, color: string) => {
-			Array.from(document.getElementsByClassName(className)).forEach((element) => {
-				const el = element as HTMLElement;
-				el.style.backgroundColor = background;
-				el.style.color = color;
+			document.querySelectorAll(`table.harada td.${className}`).forEach((element) => {
+				if (!element.instanceOf(HTMLElement)) {
+					return;
+				}
+				element.setCssStyles({
+					backgroundColor: background,
+					color,
+				});
 			});
 		};
 		paint("goal", this.settings.goalBackgroundColor, this.settings.goalTextColor);
@@ -176,7 +180,8 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 	}
 
 	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		const saved = (await this.loadData()) as Partial<HaradaMethodGoalsSettings> | null;
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, saved ?? {});
 		this.applySettings();
 	}
 
@@ -213,7 +218,7 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 		if (!element || !context?.sourcePath || !this.settings) {
 			return;
 		}
-		if (!isMasterNote(context.sourcePath, this.settings.masterNoteFilename)) {
+		if (!isMasterNote(context.sourcePath, this.settings.masterNoteFilename, this.app.vault.configDir)) {
 			return;
 		}
 
@@ -231,7 +236,7 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 			if (!(view instanceof MarkdownView) || !view.file) {
 				continue;
 			}
-			if (!isMasterNote(view.file.path, this.settings.masterNoteFilename)) {
+			if (!isMasterNote(view.file.path, this.settings.masterNoteFilename, this.app.vault.configDir)) {
 				continue;
 			}
 			const sizer = previewSizer(view);
@@ -247,7 +252,7 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 	}
 
 	private async mountFolderChart(hostParent: HTMLElement, sourcePath: string) {
-		if (!isMasterNote(sourcePath, this.settings.masterNoteFilename)) {
+		if (!isMasterNote(sourcePath, this.settings.masterNoteFilename, this.app.vault.configDir)) {
 			return;
 		}
 		if (hostParent.querySelector("table.harada-folder") || this.mountingPaths.has(sourcePath)) {
@@ -277,12 +282,12 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 		if ("button" in event && event.button !== 0) {
 			return;
 		}
-		const eventTarget = event.target;
-		if (!(eventTarget instanceof Element)) {
+		const eventTarget = this.eventElement(event);
+		if (!eventTarget) {
 			return;
 		}
 		const cell = eventTarget.closest("td.harada-clickable, td.harada-draggable");
-		if (!(cell instanceof HTMLElement) || !cell.closest("table.harada-folder")) {
+		if (!cell || !cell.instanceOf(HTMLElement) || !cell.closest("table.harada-folder")) {
 			return;
 		}
 
@@ -295,7 +300,7 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 			return;
 		}
 
-		if (this.dragMoved || !cell.classList.contains("harada-clickable")) {
+		if (Date.now() < this.ignoreCellClickUntil || !cell.classList.contains("harada-clickable")) {
 			return;
 		}
 
@@ -309,6 +314,18 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 		}
 		this.lastCellActivate = now;
 		void this.activateHaradaCell(cell);
+	}
+
+	private eventElement(event: Event): HTMLElement | null {
+		const raw = event.target;
+		if (!raw || !(raw instanceof Node)) {
+			return null;
+		}
+		const node = raw.nodeType === Node.TEXT_NODE ? raw.parentElement : raw;
+		if (!node || !node.instanceOf(HTMLElement)) {
+			return null;
+		}
+		return node;
 	}
 
 	private async activateHaradaCell(cell: HTMLElement) {
@@ -437,9 +454,12 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 		let folderPath = target.folderPath;
 		const keyplan =
 			target.keyplanIndex !== undefined ? scan.keyplans[target.keyplanIndex] : undefined;
-		const actions = (keyplan?.actions ?? []).flatMap((action) =>
-			action.name && action.path ? [{ name: action.name, path: action.path }] : [],
-		);
+		const actions: { name: string; path: string }[] = [];
+		for (const action of keyplan?.actions ?? []) {
+			if (action.name && action.path) {
+				actions.push({ name: action.name, path: action.path });
+			}
+		}
 		let title = target.label;
 		openPlanDetail(this.app, {
 			title,
@@ -488,7 +508,7 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 
 	activeMasterPath(): string | null {
 		const active = this.app.workspace.getActiveFile();
-		if (active && isMasterNote(active.path, this.settings.masterNoteFilename)) {
+		if (active && isMasterNote(active.path, this.settings.masterNoteFilename, this.app.vault.configDir)) {
 			this.lastMasterPath = active.path;
 			return active.path;
 		}
@@ -497,12 +517,12 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 		}
 		const hit = this.app.vault
 			.getMarkdownFiles()
-			.find((file) => isMasterNote(file.path, this.settings.masterNoteFilename));
+			.find((file) => isMasterNote(file.path, this.settings.masterNoteFilename, this.app.vault.configDir));
 		return hit?.path ?? null;
 	}
 
 	private rememberMaster(file: TFile | null) {
-		if (file && isMasterNote(file.path, this.settings.masterNoteFilename)) {
+		if (file && isMasterNote(file.path, this.settings.masterNoteFilename, this.app.vault.configDir)) {
 			this.lastMasterPath = file.path;
 		}
 	}
@@ -556,7 +576,6 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 		if ((kind !== "keyplan" && kind !== "action") || !sourcePath) {
 			return;
 		}
-		this.dragMoved = false;
 		this.dragPayload = {
 			sourcePath,
 			kind,
@@ -593,9 +612,11 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 			return;
 		}
 		event.preventDefault();
-		this.dragMoved = true;
+		// Self-heals: even if dragend never clears state, clicks work again after this window.
+		this.ignoreCellClickUntil = Date.now() + 400;
 		const scan = await scanGoalFolderFromFile(this.app, payload.sourcePath, this.settings);
 		if (!scan) {
+			this.finishChartDrag();
 			return;
 		}
 		const error = await applyChartDrop(
@@ -610,18 +631,24 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 			},
 			this.settings,
 		);
+		this.finishChartDrag();
 		if (error) {
 			new Notice(error);
 		}
 	}
 
+	private finishChartDrag() {
+		this.clearDropHighlights();
+		this.dragPayload = null;
+	}
+
 	private chartCellFromEvent(event: Event, selector: string): HTMLElement | null {
-		const target = event.target;
-		if (!(target instanceof Element)) {
+		const target = this.eventElement(event);
+		if (!target) {
 			return null;
 		}
 		const cell = target.closest(selector);
-		if (!(cell instanceof HTMLElement) || !cell.closest("table.harada-folder")) {
+		if (!cell || !cell.instanceOf(HTMLElement) || !cell.closest("table.harada-folder")) {
 			return null;
 		}
 		return cell;
@@ -687,7 +714,7 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 			if (!(view instanceof MarkdownView) || !view.file) {
 				continue;
 			}
-			if (!isMasterNote(view.file.path, this.settings.masterNoteFilename)) {
+			if (!isMasterNote(view.file.path, this.settings.masterNoteFilename, this.app.vault.configDir)) {
 				continue;
 			}
 			seen.add(view.file.path);
@@ -705,7 +732,7 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 		for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
 			const view = leaf.view;
 			if (view instanceof MarkdownView && view.file) {
-				if (isMasterNote(view.file.path, this.settings.masterNoteFilename)) {
+				if (isMasterNote(view.file.path, this.settings.masterNoteFilename, this.app.vault.configDir)) {
 					masters.add(view.file.path);
 				}
 			}
@@ -735,7 +762,7 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 			if (!(view instanceof MarkdownView) || !view.file) {
 				continue;
 			}
-			if (!isMasterNote(view.file.path, this.settings.masterNoteFilename)) {
+			if (!isMasterNote(view.file.path, this.settings.masterNoteFilename, this.app.vault.configDir)) {
 				continue;
 			}
 			const sourcePath = view.file.path;
@@ -745,7 +772,7 @@ export default class HaradaMethodGoalsPlugin extends Plugin {
 				}
 			});
 			view.contentEl.querySelectorAll(".harada-code-host, .block-language-goals, .block-language-harada").forEach((node) => {
-				if (node instanceof HTMLElement) {
+				if (node.instanceOf(HTMLElement)) {
 					hosts.set(node, sourcePath);
 				}
 			});
@@ -802,11 +829,131 @@ class HaradaMethodGoalsSettingTab extends PluginSettingTab {
 		this.plugin = plugin;
 	}
 
+	getSettingDefinitions(): SettingDefinitionItem[] {
+		return [
+			{
+				type: "group",
+				heading: "Files",
+				items: [
+					{
+						name: "Master note filename",
+						desc: "Note that hosts the chart. Default: goals.md",
+						control: {
+							type: "text",
+							key: "masterNoteFilename",
+							placeholder: "goals.md",
+							defaultValue: DEFAULT_SETTINGS.masterNoteFilename,
+						},
+					},
+					{
+						name: "Parent folder",
+						desc: "Vault-relative path for new goals (for example Planner/Goal). Leave empty to create at the vault root.",
+						control: {
+							type: "text",
+							key: "parentFolder",
+							placeholder: "Planner/Goal",
+							defaultValue: DEFAULT_SETTINGS.parentFolder,
+						},
+					},
+				],
+			},
+			{
+				type: "group",
+				heading: "Colors",
+				items: [
+					{
+						name: "Goal background color",
+						control: {
+							type: "color",
+							key: "goalBackgroundColor",
+							defaultValue: DEFAULT_SETTINGS.goalBackgroundColor,
+						},
+					},
+					{
+						name: "Goal text color",
+						control: {
+							type: "color",
+							key: "goalTextColor",
+							defaultValue: DEFAULT_SETTINGS.goalTextColor,
+						},
+					},
+					{
+						name: "Key Plan background color",
+						control: {
+							type: "color",
+							key: "keyplanBackgroundColor",
+							defaultValue: DEFAULT_SETTINGS.keyplanBackgroundColor,
+						},
+					},
+					{
+						name: "Key Plan text color",
+						control: {
+							type: "color",
+							key: "keyplanTextColor",
+							defaultValue: DEFAULT_SETTINGS.keyplanTextColor,
+						},
+					},
+					{
+						name: "Action background color",
+						control: {
+							type: "color",
+							key: "actionBackgroundColor",
+							defaultValue: DEFAULT_SETTINGS.actionBackgroundColor,
+						},
+					},
+					{
+						name: "Action text color",
+						control: {
+							type: "color",
+							key: "actionTextColor",
+							defaultValue: DEFAULT_SETTINGS.actionTextColor,
+						},
+					},
+				],
+			},
+		];
+	}
+
+	async setControlValue(key: string, value: unknown): Promise<void> {
+		if (typeof value !== "string") {
+			return;
+		}
+		switch (key) {
+			case "masterNoteFilename":
+				this.plugin.settings.masterNoteFilename = value.trim() || "goals.md";
+				break;
+			case "parentFolder":
+				this.plugin.settings.parentFolder = value.trim();
+				break;
+			case "goalBackgroundColor":
+				this.plugin.settings.goalBackgroundColor = value;
+				break;
+			case "goalTextColor":
+				this.plugin.settings.goalTextColor = value;
+				break;
+			case "keyplanBackgroundColor":
+				this.plugin.settings.keyplanBackgroundColor = value;
+				break;
+			case "keyplanTextColor":
+				this.plugin.settings.keyplanTextColor = value;
+				break;
+			case "actionBackgroundColor":
+				this.plugin.settings.actionBackgroundColor = value;
+				break;
+			case "actionTextColor":
+				this.plugin.settings.actionTextColor = value;
+				break;
+			default:
+				return;
+		}
+		await this.plugin.saveSettings();
+	}
+
 	display(): void {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		containerEl.createEl("h2", { text: "Files" });
+		new Setting(containerEl).setName("Files").setHeading();
 
 		new Setting(containerEl)
 			.setName("Master note filename")
@@ -834,7 +981,7 @@ class HaradaMethodGoalsSettingTab extends PluginSettingTab {
 					}),
 			);
 
-		containerEl.createEl("h2", { text: "Colors" });
+		new Setting(containerEl).setName("Colors").setHeading();
 
 		new Setting(containerEl)
 			.setName("Goal background color")

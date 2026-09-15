@@ -143,6 +143,14 @@ table.harada td.harada-drop-target {
     outline-offset: -2px;
 }
 
+table.harada td.harada-progress {
+    background-image: linear-gradient(
+        to top,
+        color-mix(in srgb, currentColor 16%, transparent) var(--harada-progress, 0%),
+        transparent var(--harada-progress, 0%)
+    );
+}
+
 table.harada td.harada-complete::after {
     content: "";
     position: absolute;
@@ -237,10 +245,14 @@ table.harada td.harada-complete::after {
     flex: none;
 }
 
-.harada-icon-btn {
+.harada-icon-btn.clickable-icon {
     flex: none;
-    background: transparent !important;
-    box-shadow: none !important;
+    background: transparent;
+    box-shadow: none;
+}
+
+.harada-name-input {
+    width: 100%;
 }
 
 .harada-title-input {

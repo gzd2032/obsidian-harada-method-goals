@@ -36,15 +36,18 @@ export interface GoalFolderScan {
 	keyplans: KeyPlanSlot[];
 }
 
-export function isMasterNote(sourcePath: string, masterNoteFilename: string): boolean {
+export function isMasterNote(
+	sourcePath: string,
+	masterNoteFilename: string,
+	configDir: string,
+): boolean {
 	if (!sourcePath) {
 		return false;
 	}
-	const parts = sourcePath.split("/");
-	if (parts.includes(".obsidian")) {
+	if (sourcePath === configDir || sourcePath.startsWith(`${configDir}/`)) {
 		return false;
 	}
-	const fileName = parts[parts.length - 1] ?? "";
+	const fileName = sourcePath.split("/").pop() ?? "";
 	if (!fileName.toLowerCase().endsWith(".md")) {
 		return false;
 	}
@@ -191,7 +194,7 @@ export function scanGoalFolder(
 	settings: GoalFolderSettings,
 	outlineText = "",
 ): GoalFolderScan | null {
-	if (!isMasterNote(masterPath, settings.masterNoteFilename)) {
+	if (!isMasterNote(masterPath, settings.masterNoteFilename, app.vault.configDir)) {
 		return null;
 	}
 
@@ -388,6 +391,26 @@ export async function createActionNote(
 
 const TASK_LINE_RE = /^(\s*(?:[-*+]|\d+\.)\s+)\[([ xX])\](\s?)(.*)$/;
 
+interface TaskLineMatch {
+	prefix: string;
+	mark: string;
+	text: string;
+}
+
+function matchTaskLine(line: string): TaskLineMatch | null {
+	const match = TASK_LINE_RE.exec(line);
+	if (!match) {
+		return null;
+	}
+	const prefix = match[1];
+	const mark = match[2];
+	if (typeof prefix !== "string" || typeof mark !== "string") {
+		return null;
+	}
+	const text = typeof match[4] === "string" ? match[4] : "";
+	return { prefix, mark, text };
+}
+
 export interface ActionTaskLine {
 	index: number;
 	checked: boolean;
@@ -395,13 +418,24 @@ export interface ActionTaskLine {
 }
 
 export function parseActionTasks(content: string): ActionTaskLine[] {
-	return content.split("\n").flatMap((line, index) => {
-		const match = line.match(TASK_LINE_RE);
-		if (!match) {
-			return [];
+	const tasks: ActionTaskLine[] = [];
+	const lines = content.split("\n");
+	for (let index = 0; index < lines.length; index++) {
+		const line = lines[index];
+		if (line === undefined) {
+			continue;
 		}
-		return [{ index, checked: match[2].toLowerCase() === "x", text: match[4] ?? "" }];
-	});
+		const match = matchTaskLine(line);
+		if (!match) {
+			continue;
+		}
+		tasks.push({
+			index,
+			checked: match.mark.toLowerCase() === "x",
+			text: match.text,
+		});
+	}
+	return tasks;
 }
 
 export function toggleActionTaskLine(content: string, lineIndex: number): string {
@@ -418,18 +452,19 @@ export function updateActionTaskLine(
 	if (line === undefined) {
 		return content;
 	}
-	const match = line.match(TASK_LINE_RE);
+	const match = matchTaskLine(line);
 	if (!match) {
 		return content;
 	}
-	let checked = match[2].toLowerCase() === "x";
+	let checked = match.mark.toLowerCase() === "x";
 	if (patch.checked === "toggle") {
 		checked = !checked;
 	} else if (typeof patch.checked === "boolean") {
 		checked = patch.checked;
 	}
-	const text = patch.text === undefined ? (match[4] ?? "") : patch.text.replace(/\s+/g, " ").trim();
-	lines[lineIndex] = `${match[1]}[${checked ? "x" : " "}] ${text}`.trimEnd();
+	const text =
+		patch.text === undefined ? match.text : patch.text.replace(/\s+/g, " ").trim();
+	lines[lineIndex] = `${match.prefix}[${checked ? "x" : " "}] ${text}`.trimEnd();
 	return lines.join("\n");
 }
 
@@ -498,14 +533,14 @@ export function updateActionNotes(content: string, notes: string): string {
 export async function deleteActionNote(app: App, path: string): Promise<void> {
 	const file = app.vault.getAbstractFileByPath(path);
 	if (file instanceof TFile) {
-		await app.vault.trash(file, true);
+		await app.fileManager.trashFile(file);
 	}
 }
 
 export async function deleteKeyPlanFolder(app: App, folderPath: string): Promise<void> {
 	const folder = app.vault.getAbstractFileByPath(folderPath);
 	if (folder instanceof TFolder) {
-		await app.vault.trash(folder, true);
+		await app.fileManager.trashFile(folder);
 	}
 }
 
